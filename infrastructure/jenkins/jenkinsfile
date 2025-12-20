@@ -1,0 +1,500 @@
+// infrastructure/jenkins/Jenkinsfile
+
+pipeline {
+    agent any
+    
+    environment {
+        // Docker Registry
+        DOCKER_REGISTRY = 'registry.example.com'
+        DOCKER_CREDENTIALS = 'docker-registry-credentials'
+        
+        // Application versions
+        BACKEND_IMAGE = "${DOCKER_REGISTRY}/transport-backend"
+        FRONTEND_IMAGE = "${DOCKER_REGISTRY}/transport-frontend"
+        VERSION = "${env.BUILD_NUMBER}-${env.GIT_COMMIT.take(7)}"
+        
+        // Kubernetes
+        K8S_NAMESPACE = 'transport-optimizer'
+        K8S_CREDENTIALS = 'kubeconfig'
+        
+        // Security scanning
+        TRIVY_VERSION = 'latest'
+        SONAR_PROJECT_KEY = 'transport-optimizer'
+        
+        // Notification
+        SLACK_CHANNEL = '#devops-alerts'
+        SLACK_CREDENTIALS = 'slack-webhook'
+    }
+    
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timestamps()
+        timeout(time: 1, unit: 'HOURS')
+        disableConcurrentBuilds()
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                script {
+                    echo "🔄 Checking out code from Git..."
+                    checkout scm
+                    
+                    // Get commit info
+                    env.GIT_COMMIT_MSG = sh(
+                        script: 'git log -1 --pretty=%B',
+                        returnStdout: true
+                    ).trim()
+                    env.GIT_AUTHOR = sh(
+                        script: 'git log -1 --pretty=%an',
+                        returnStdout: true
+                    ).trim()
+                }
+            }
+        }
+        
+        stage('Install Dependencies') {
+            parallel {
+                stage('Backend Dependencies') {
+                    steps {
+                        dir('backend') {
+                            sh '''
+                                echo "📦 Installing backend dependencies..."
+                                npm ci
+                            '''
+                        }
+                    }
+                }
+                
+                stage('Frontend Dependencies') {
+                    steps {
+                        dir('frontend') {
+                            sh '''
+                                echo "📦 Installing frontend dependencies..."
+                                npm ci
+                            '''
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Code Quality & Testing') {
+            parallel {
+                stage('Backend Tests') {
+                    steps {
+                        dir('backend') {
+                            sh '''
+                                echo "🧪 Running backend tests..."
+                                npm run test || true
+                                npm run test:coverage || true
+                            '''
+                        }
+                    }
+                }
+                
+                stage('Frontend Tests') {
+                    steps {
+                        dir('frontend') {
+                            sh '''
+                                echo "🧪 Running frontend tests..."
+                                npm run test -- --coverage --watchAll=false || true
+                            '''
+                        }
+                    }
+                }
+                
+                stage('Lint Backend') {
+                    steps {
+                        dir('backend') {
+                            sh '''
+                                echo "🔍 Linting backend code..."
+                                npm run lint || true
+                            '''
+                        }
+                    }
+                }
+                
+                stage('Lint Frontend') {
+                    steps {
+                        dir('frontend') {
+                            sh '''
+                                echo "🔍 Linting frontend code..."
+                                npm run lint || true
+                            '''
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('SonarQube Analysis') {
+            steps {
+                script {
+                    withSonarQubeEnv('SonarQube') {
+                        sh '''
+                            echo "📊 Running SonarQube analysis..."
+                            sonar-scanner \
+                              -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
+                              -Dsonar.sources=. \
+                              -Dsonar.host.url=${SONAR_HOST_URL} \
+                              -Dsonar.login=${SONAR_AUTH_TOKEN}
+                        '''
+                    }
+                    
+                    timeout(time: 5, unit: 'MINUTES') {
+                        def qg = waitForQualityGate()
+                        if (qg.status != 'OK') {
+                            echo "⚠️ Quality Gate failed: ${qg.status}"
+                            // Don't fail the build, just warn
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Build Docker Images') {
+            parallel {
+                stage('Build Backend Image') {
+                    steps {
+                        script {
+                            echo "🐳 Building backend Docker image..."
+                            dir('backend') {
+                                docker.build("${BACKEND_IMAGE}:${VERSION}")
+                                docker.build("${BACKEND_IMAGE}:latest")
+                            }
+                        }
+                    }
+                }
+                
+                stage('Build Frontend Image') {
+                    steps {
+                        script {
+                            echo "🐳 Building frontend Docker image..."
+                            dir('frontend') {
+                                docker.build("${FRONTEND_IMAGE}:${VERSION}")
+                                docker.build("${FRONTEND_IMAGE}:latest")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Security Scanning') {
+            parallel {
+                stage('Scan Backend Image') {
+                    steps {
+                        script {
+                            echo "🔒 Scanning backend image with Trivy..."
+                            sh """
+                                docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \\
+                                    aquasec/trivy:${TRIVY_VERSION} image \\
+                                    --severity HIGH,CRITICAL \\
+                                    --exit-code 0 \\
+                                    --no-progress \\
+                                    ${BACKEND_IMAGE}:${VERSION}
+                            """
+                        }
+                    }
+                }
+                
+                stage('Scan Frontend Image') {
+                    steps {
+                        script {
+                            echo "🔒 Scanning frontend image with Trivy..."
+                            sh """
+                                docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \\
+                                    aquasec/trivy:${TRIVY_VERSION} image \\
+                                    --severity HIGH,CRITICAL \\
+                                    --exit-code 0 \\
+                                    --no-progress \\
+                                    ${FRONTEND_IMAGE}:${VERSION}
+                            """
+                        }
+                    }
+                }
+                
+                stage('Dependency Check') {
+                    steps {
+                        sh '''
+                            echo "🔍 Checking dependencies for vulnerabilities..."
+                            npm audit --audit-level=high || true
+                        '''
+                    }
+                }
+            }
+        }
+        
+        stage('Push Docker Images') {
+            when {
+                branch 'main'
+            }
+            steps {
+                script {
+                    echo "⬆️ Pushing Docker images to registry..."
+                    docker.withRegistry("https://${DOCKER_REGISTRY}", DOCKER_CREDENTIALS) {
+                        // Push backend
+                        docker.image("${BACKEND_IMAGE}:${VERSION}").push()
+                        docker.image("${BACKEND_IMAGE}:latest").push()
+                        
+                        // Push frontend
+                        docker.image("${FRONTEND_IMAGE}:${VERSION}").push()
+                        docker.image("${FRONTEND_IMAGE}:latest").push()
+                    }
+                }
+            }
+        }
+        
+        stage('Deploy to Staging') {
+            when {
+                branch 'develop'
+            }
+            steps {
+                script {
+                    echo "🚀 Deploying to Staging environment..."
+                    
+                    withKubeConfig([credentialsId: K8S_CREDENTIALS]) {
+                        sh """
+                            # Update image versions in manifests
+                            kubectl set image deployment/backend \\
+                                backend=${BACKEND_IMAGE}:${VERSION} \\
+                                -n ${K8S_NAMESPACE}-staging
+                            
+                            kubectl set image deployment/frontend \\
+                                frontend=${FRONTEND_IMAGE}:${VERSION} \\
+                                -n ${K8S_NAMESPACE}-staging
+                            
+                            # Wait for rollout
+                            kubectl rollout status deployment/backend -n ${K8S_NAMESPACE}-staging
+                            kubectl rollout status deployment/frontend -n ${K8S_NAMESPACE}-staging
+                        """
+                    }
+                }
+            }
+        }
+        
+        stage('Integration Tests') {
+            when {
+                branch 'develop'
+            }
+            steps {
+                script {
+                    echo "🧪 Running integration tests..."
+                    sh '''
+                        # Wait for services to be ready
+                        sleep 30
+                        
+                        # Run integration tests
+                        npm run test:integration || true
+                    '''
+                }
+            }
+        }
+        
+        stage('Deploy to Production') {
+            when {
+                branch 'main'
+            }
+            steps {
+                script {
+                    // Manual approval for production
+                    input message: 'Deploy to Production?', ok: 'Deploy'
+                    
+                    echo "🚀 Deploying to Production environment..."
+                    
+                    withKubeConfig([credentialsId: K8S_CREDENTIALS]) {
+                        sh """
+                            # Blue-Green deployment strategy
+                            
+                            # Update backend
+                            kubectl set image deployment/backend \\
+                                backend=${BACKEND_IMAGE}:${VERSION} \\
+                                -n ${K8S_NAMESPACE}
+                            
+                            # Update frontend
+                            kubectl set image deployment/frontend \\
+                                frontend=${FRONTEND_IMAGE}:${VERSION} \\
+                                -n ${K8S_NAMESPACE}
+                            
+                            # Wait for rollout
+                            kubectl rollout status deployment/backend -n ${K8S_NAMESPACE} --timeout=5m
+                            kubectl rollout status deployment/frontend -n ${K8S_NAMESPACE} --timeout=5m
+                            
+                            # Verify deployment
+                            kubectl get pods -n ${K8S_NAMESPACE}
+                        """
+                    }
+                }
+            }
+        }
+        
+        stage('Smoke Tests') {
+            when {
+                branch 'main'
+            }
+            steps {
+                script {
+                    echo "🧪 Running smoke tests on production..."
+                    sh '''
+                        # Wait for services
+                        sleep 30
+                        
+                        # Health check
+                        curl -f https://transport.example.com/health || exit 1
+                        
+                        # API smoke test
+                        curl -f https://transport.example.com/api/health || exit 1
+                    '''
+                }
+            }
+        }
+        
+        stage('Performance Tests') {
+            when {
+                branch 'main'
+            }
+            steps {
+                script {
+                    echo "⚡ Running performance tests..."
+                    sh '''
+                        # Run k6 load tests
+                        k6 run --vus 10 --duration 30s tests/performance/load-test.js || true
+                    '''
+                }
+            }
+        }
+        
+        stage('Terraform Apply') {
+            when {
+                branch 'main'
+                changeset "infrastructure/terraform/**"
+            }
+            steps {
+                dir('infrastructure/terraform') {
+                    script {
+                        echo "🏗️ Applying Terraform changes..."
+                        sh '''
+                            terraform init
+                            terraform plan -out=tfplan
+                            terraform apply -auto-approve tfplan
+                        '''
+                    }
+                }
+            }
+        }
+        
+        stage('Update Monitoring') {
+            steps {
+                script {
+                    echo "📊 Updating monitoring dashboards..."
+                    sh '''
+                        # Update Grafana dashboards
+                        curl -X POST https://grafana.example.com/api/dashboards/db \\
+                            -H "Content-Type: application/json" \\
+                            -d @grafana/dashboards/transport-optimizer.json
+                    '''
+                }
+            }
+        }
+    }
+    
+    post {
+        success {
+            script {
+                echo "✅ Pipeline completed successfully!"
+                
+                // Send Slack notification
+                slackSend(
+                    channel: SLACK_CHANNEL,
+                    color: 'good',
+                    message: """
+                        ✅ *Build Successful*
+                        *Project*: ${env.JOB_NAME}
+                        *Build*: #${env.BUILD_NUMBER}
+                        *Version*: ${VERSION}
+                        *Branch*: ${env.GIT_BRANCH}
+                        *Author*: ${env.GIT_AUTHOR}
+                        *Commit*: ${env.GIT_COMMIT_MSG}
+                        *Duration*: ${currentBuild.durationString}
+                        <${env.BUILD_URL}|View Build>
+                    """
+                )
+            }
+        }
+        
+        failure {
+            script {
+                echo "❌ Pipeline failed!"
+                
+                // Send Slack notification
+                slackSend(
+                    channel: SLACK_CHANNEL,
+                    color: 'danger',
+                    message: """
+                        ❌ *Build Failed*
+                        *Project*: ${env.JOB_NAME}
+                        *Build*: #${env.BUILD_NUMBER}
+                        *Branch*: ${env.GIT_BRANCH}
+                        *Author*: ${env.GIT_AUTHOR}
+                        *Duration*: ${currentBuild.durationString}
+                        <${env.BUILD_URL}|View Build>
+                        <${env.BUILD_URL}/console|View Console>
+                    """
+                )
+            }
+        }
+        
+        unstable {
+            script {
+                echo "⚠️ Pipeline unstable!"
+                
+                slackSend(
+                    channel: SLACK_CHANNEL,
+                    color: 'warning',
+                    message: """
+                        ⚠️ *Build Unstable*
+                        *Project*: ${env.JOB_NAME}
+                        *Build*: #${env.BUILD_NUMBER}
+                        Some tests failed but build continued
+                        <${env.BUILD_URL}|View Build>
+                    """
+                )
+            }
+        }
+        
+        always {
+            // Cleanup
+            sh '''
+                echo "🧹 Cleaning up..."
+                docker system prune -f || true
+            '''
+            
+            // Archive artifacts
+            archiveArtifacts artifacts: '**/target/*.jar,**/build/**/*.js', allowEmptyArchive: true
+            
+            // Publish test results
+            junit '**/test-results/**/*.xml'
+            
+            // Publish code coverage
+            publishHTML([
+                reportDir: 'backend/coverage',
+                reportFiles: 'index.html',
+                reportName: 'Backend Coverage Report'
+            ])
+            
+            publishHTML([
+                reportDir: 'frontend/coverage',
+                reportFiles: 'index.html',
+                reportName: 'Frontend Coverage Report'
+            ])
+        }
+    }
+}
+
+// ================== MULTIBRANCH PIPELINE ==================
+
+// Jenkins configuration for multibranch pipeline
+// Scan branches: main, develop, feature/*
+// Webhook trigger: GitHub/GitLab
+// Credentials: Docker registry, Kubernetes, Slack

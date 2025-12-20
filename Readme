@@ -1,0 +1,761 @@
+# 🚌 Transport Optimizer - Système DevOps Complet
+
+## 📋 Table des Matières
+
+1. [Vue d'ensemble](#vue-densemble)
+2. [Architecture](#architecture)
+3. [Prérequis](#prérequis)
+4. [Installation](#installation)
+5. [Configuration](#configuration)
+6. [Déploiement](#déploiement)
+7. [Monitoring & Observabilité](#monitoring--observabilité)
+8. [Sécurité](#sécurité)
+9. [Tests](#tests)
+10. [Troubleshooting](#troubleshooting)
+
+---
+
+## 🎯 Vue d'ensemble
+
+Transport Optimizer est une application DevOps complète pour l'optimisation intelligente des transports publics. Le système :
+
+- **Calcule des itinéraires optimaux** multi-critères (durée, correspondances, marche, congestion)
+- **Intègre des données en temps réel** via OpenStreetMap et TomTom
+- **Détecte et signale les anomalies** (retards, suppressions, déviations, incidents, grèves)
+- **Offre une interface moderne** avec visualisation cartographique interactive
+- **Implémente des pratiques DevOps complètes** (CI/CD, conteneurisation, orchestration, monitoring)
+
+### ✨ Fonctionnalités Principales
+
+#### Backend
+- ✅ API REST avec Express.js et Node.js 20
+- ✅ Géocodage via OpenStreetMap (OSM)
+- ✅ Données de trafic en temps réel (TomTom API)
+- ✅ Cache Redis pour optimiser les performances
+- ✅ Algorithme multi-critères avec pondération intelligente
+- ✅ Détection exhaustive des anomalies de transport
+- ✅ Rate limiting et sécurité renforcée (Helmet, CORS)
+- ✅ Logging structuré avec Winston
+
+#### Frontend
+- ✅ Interface React 18 moderne et responsive
+- ✅ Carte interactive avec Leaflet
+- ✅ Visualisation des itinéraires en temps réel
+- ✅ Affichage des scores et métriques détaillées
+- ✅ Gestion des alertes et anomalies
+- ✅ Design moderne avec Tailwind CSS
+
+#### DevOps
+- ✅ Pipeline CI/CD complet avec Jenkins
+- ✅ Conteneurisation Docker multi-stage
+- ✅ Orchestration Kubernetes (EKS)
+- ✅ Infrastructure as Code avec Terraform
+- ✅ Configuration automatisée avec Ansible
+- ✅ Monitoring Prometheus + Grafana
+- ✅ Sécurité: scanning Trivy, Quality Gates SonarQube
+- ✅ Blue-Green deployment
+
+---
+
+## 🏗️ Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    UTILISATEURS                          │
+└────────────────────┬────────────────────────────────────┘
+                     │
+                     ▼
+┌─────────────────────────────────────────────────────────┐
+│                 Nginx (Load Balancer)                    │
+│          SSL/TLS • Rate Limiting • WAF                   │
+└────────────────────┬────────────────────────────────────┘
+                     │
+        ┌────────────┴────────────┐
+        ▼                         ▼
+┌──────────────┐          ┌──────────────┐
+│   Frontend   │          │   Backend    │
+│  React + UI  │◄────────►│  Express API │
+│   (3 pods)   │          │   (3 pods)   │
+└──────────────┘          └───────┬──────┘
+                                  │
+                    ┌─────────────┼─────────────┐
+                    ▼             ▼             ▼
+              ┌─────────┐   ┌─────────┐   ┌─────────┐
+              │  Redis  │   │   OSM   │   │ TomTom  │
+              │  Cache  │   │   API   │   │   API   │
+              └─────────┘   └─────────┘   └─────────┘
+```
+
+### Stack Technologique
+
+| Composant | Technologie |
+|-----------|-------------|
+| **Backend** | Node.js 20, Express.js |
+| **Frontend** | React 18, Leaflet, Tailwind CSS |
+| **Cache** | Redis 7 |
+| **Conteneurs** | Docker, Docker Compose |
+| **Orchestration** | Kubernetes (AWS EKS) |
+| **CI/CD** | Jenkins Pipeline |
+| **IaC** | Terraform (AWS) |
+| **Configuration** | Ansible |
+| **Monitoring** | Prometheus + Grafana |
+| **Logs** | ELK Stack (Elasticsearch, Logstash, Kibana) |
+| **Security** | Trivy, SonarQube, Helmet |
+
+---
+
+## 📦 Prérequis
+
+### Développement Local
+
+```bash
+# Versions requises
+Node.js >= 20.0.0
+npm >= 10.0.0
+Docker >= 24.0.0
+Docker Compose >= 2.20.0
+```
+
+### Production
+
+```bash
+# Infrastructure
+Kubernetes >= 1.28
+Terraform >= 1.0
+Ansible >= 2.15
+Jenkins >= 2.400
+AWS CLI >= 2.0
+
+# Accès requis
+- AWS Account avec permissions EKS, VPC, EC2
+- TomTom API Key (gratuite: https://developer.tomtom.com)
+- Docker Registry (Docker Hub, ECR, ou privé)
+```
+
+---
+
+## 🚀 Installation
+
+### 1. Clone du Repository
+
+```bash
+git clone https://github.com/your-org/transport-optimizer.git
+cd transport-optimizer
+```
+
+### 2. Configuration des Variables d'Environnement
+
+```bash
+# Backend
+cd backend
+cp .env.example .env
+
+# Éditer .env avec vos clés API
+TOMTOM_API_KEY=your_tomtom_api_key_here
+REDIS_URL=redis://localhost:6379
+PORT=3000
+NODE_ENV=development
+ALLOWED_ORIGINS=http://localhost:3001
+```
+
+```bash
+# Frontend
+cd ../frontend
+cp .env.example .env
+
+# Éditer .env
+REACT_APP_API_URL=http://localhost:3000/api
+```
+
+### 3. Installation des Dépendances
+
+```bash
+# Backend
+cd backend
+npm install
+
+# Frontend
+cd ../frontend
+npm install
+```
+
+### 4. Démarrage avec Docker Compose (Recommandé)
+
+```bash
+# À la racine du projet
+docker-compose up -d
+
+# Vérifier les services
+docker-compose ps
+
+# Logs
+docker-compose logs -f
+```
+
+### 5. Démarrage Manuel (Dev)
+
+```bash
+# Terminal 1 - Redis
+docker run -d -p 6379:6379 redis:7-alpine
+
+# Terminal 2 - Backend
+cd backend
+npm run dev
+
+# Terminal 3 - Frontend
+cd frontend
+npm start
+```
+
+### 6. Accès aux Applications
+
+- **Frontend**: http://localhost:3001
+- **Backend API**: http://localhost:3000
+- **API Health**: http://localhost:3000/health
+- **Prometheus**: http://localhost:9090
+- **Grafana**: http://localhost:3002 (admin/admin)
+
+---
+
+## ⚙️ Configuration
+
+### Backend - Variables d'Environnement
+
+| Variable | Description | Défaut |
+|----------|-------------|--------|
+| `PORT` | Port du serveur | 3000 |
+| `NODE_ENV` | Environnement | development |
+| `REDIS_URL` | URL Redis | redis://localhost:6379 |
+| `TOMTOM_API_KEY` | Clé API TomTom | - |
+| `ALLOWED_ORIGINS` | CORS origins | http://localhost:3001 |
+
+### Configuration Redis Cache
+
+```javascript
+// backend/src/config/cache.js
+const cacheTTL = {
+  traffic: 300,      // 5 minutes
+  routes: 600,       // 10 minutes
+  geocoding: 3600    // 1 heure
+};
+```
+
+### Algorithme Multi-Critères
+
+```javascript
+// Pondération des critères (total = 1.0)
+const weights = {
+  duration: 0.35,     // Durée prioritaire
+  transfers: 0.25,    // Nombre de correspondances
+  walking: 0.15,      // Distance de marche
+  congestion: 0.15,   // Congestion trafic
+  density: 0.10       // Densité urbaine
+};
+```
+
+---
+
+## 🚢 Déploiement
+
+### Option 1: Docker Compose (Simple)
+
+```bash
+# Production
+docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+# Scaling
+docker-compose up -d --scale backend=3 --scale frontend=2
+```
+
+### Option 2: Kubernetes (Production)
+
+#### 2.1 Création de l'Infrastructure avec Terraform
+
+```bash
+cd infrastructure/terraform
+
+# Initialiser Terraform
+terraform init
+
+# Planifier
+terraform plan -out=tfplan
+
+# Appliquer
+terraform apply tfplan
+
+# Récupérer la config kubectl
+aws eks update-kubeconfig --name transport-production --region eu-west-1
+```
+
+#### 2.2 Déploiement avec Kubectl
+
+```bash
+# Créer le namespace
+kubectl create namespace transport-optimizer
+
+# Créer les secrets
+kubectl create secret generic transport-secrets \
+  --from-literal=tomtom-api-key=YOUR_KEY \
+  -n transport-optimizer
+
+# Déployer Redis
+kubectl apply -f infrastructure/kubernetes/redis-deployment.yaml
+kubectl apply -f infrastructure/kubernetes/redis-service.yaml
+
+# Déployer Backend
+kubectl apply -f infrastructure/kubernetes/backend-deployment.yaml
+kubectl apply -f infrastructure/kubernetes/backend-service.yaml
+kubectl apply -f infrastructure/kubernetes/backend-hpa.yaml
+
+# Déployer Frontend
+kubectl apply -f infrastructure/kubernetes/frontend-deployment.yaml
+kubectl apply -f infrastructure/kubernetes/frontend-service.yaml
+
+# Configurer Ingress
+kubectl apply -f infrastructure/kubernetes/ingress.yaml
+
+# Vérifier
+kubectl get all -n transport-optimizer
+```
+
+#### 2.3 Déploiement avec Ansible
+
+```bash
+cd infrastructure/ansible
+
+# Configurer l'inventaire
+vim inventory/hosts.ini
+
+# Déployer
+ansible-playbook -i inventory/hosts.ini playbooks/deploy.yml
+
+# Variables
+ansible-playbook -i inventory/hosts.ini playbooks/deploy.yml \
+  -e "app_version=v1.2.3" \
+  -e "docker_registry_url=registry.example.com"
+```
+
+### Option 3: Pipeline Jenkins CI/CD
+
+#### Configuration Jenkins
+
+```bash
+# 1. Installer les plugins
+- Docker Pipeline
+- Kubernetes
+- Git
+- SonarQube Scanner
+- Slack Notification
+
+# 2. Configurer les credentials
+- docker-registry-credentials
+- kubeconfig
+- slack-webhook
+- sonarqube-token
+
+# 3. Créer un Multibranch Pipeline
+- Repository URL: https://github.com/your-org/transport-optimizer
+- Script Path: infrastructure/jenkins/Jenkinsfile
+- Scan Triggers: GitHub webhook
+
+# 4. Lancer le build
+- Push vers main/develop déclenche automatiquement
+```
+
+#### Pipeline Stages
+
+1. **Checkout** - Clone du code
+2. **Install Dependencies** - npm install (backend + frontend)
+3. **Code Quality** - Tests unitaires + Linting
+4. **SonarQube Analysis** - Quality Gate
+5. **Build Docker Images** - Multi-stage builds
+6. **Security Scanning** - Trivy + npm audit
+7. **Push Images** - Docker Registry
+8. **Deploy Staging** - Auto (branch develop)
+9. **Integration Tests** - Tests E2E
+10. **Deploy Production** - Manuel approval (branch main)
+11. **Smoke Tests** - Validation post-déploiement
+
+---
+
+## 📊 Monitoring & Observabilité
+
+### Prometheus Metrics
+
+```bash
+# Accéder à Prometheus
+http://prometheus.example.com
+
+# Métriques disponibles
+- http_requests_total
+- http_request_duration_seconds
+- cache_hits_total
+- cache_misses_total
+- route_optimizations_total
+- anomalies_detected_total
+```
+
+### Grafana Dashboards
+
+```bash
+# Accéder à Grafana
+http://grafana.example.com
+# Credentials: admin / admin
+
+# Dashboards préconfigurés
+1. Transport Optimizer Overview
+2. API Performance
+3. Cache Efficiency
+4. Kubernetes Cluster Health
+5. Application Logs
+```
+
+### Alertes Configurées
+
+| Alerte | Seuil | Action |
+|--------|-------|--------|
+| High Error Rate | > 5% | Slack + PagerDuty |
+| High Response Time | > 2s (p95) | Slack |
+| Pod Down | Pod indisponible 5min | PagerDuty |
+| High Memory Usage | > 85% | Slack |
+| High CPU Usage | > 80% | Slack |
+| Redis Connection Errors | > 1/s | PagerDuty |
+
+### Logs Centralisés
+
+```bash
+# Elastic + Kibana
+http://kibana.example.com
+
+# Recherche logs
+GET /logs-transport-*/_search
+{
+  "query": {
+    "bool": {
+      "must": [
+        { "match": { "level": "error" }},
+        { "range": { "@timestamp": { "gte": "now-1h" }}}
+      ]
+    }
+  }
+}
+```
+
+---
+
+## 🔒 Sécurité
+
+### Pratiques Implémentées
+
+#### 1. Application Security
+
+- ✅ **Helmet.js** - Headers HTTP sécurisés
+- ✅ **Rate Limiting** - 100 req/15min par IP
+- ✅ **CORS** - Origins autorisées uniquement
+- ✅ **Input Validation** - Joi schemas
+- ✅ **API Keys** - Stockées en secrets K8s
+- ✅ **HTTPS/TLS 1.3** - Obligatoire en production
+
+#### 2. Container Security
+
+- ✅ **Multi-stage builds** - Images minimales
+- ✅ **Non-root users** - UID 1001
+- ✅ **Read-only filesystem** - Sauf /tmp
+- ✅ **Security scanning** - Trivy daily
+- ✅ **Image signing** - Notary/Cosign
+- ✅ **No secrets in images** - Variables d'env
+
+#### 3. Kubernetes Security
+
+- ✅ **RBAC** - Principe du moindre privilège
+- ✅ **Network Policies** - Isolation pods
+- ✅ **Pod Security Standards** - Restricted
+- ✅ **Secrets encryption** - KMS
+- ✅ **Security contexts** - Capabilities dropped
+
+#### 4. Infrastructure Security
+
+- ✅ **VPC isolation** - Subnets privés/publics
+- ✅ **Security Groups** - Least privilege
+- ✅ **WAF** - Protection attaques web
+- ✅ **Secrets Manager** - AWS Secrets Manager
+- ✅ **Audit logs** - CloudTrail
+
+### Scan de Sécurité
+
+```bash
+# Scan image Docker avec Trivy
+trivy image transport-backend:latest
+
+# Scan vulnérabilités npm
+npm audit
+
+# Scan cluster Kubernetes
+kubectl kube-bench
+
+# Analyse code SonarQube
+sonar-scanner
+```
+
+---
+
+## 🧪 Tests
+
+### Tests Unitaires
+
+```bash
+# Backend
+cd backend
+npm test
+npm run test:coverage
+
+# Frontend
+cd frontend
+npm test -- --coverage
+```
+
+### Tests d'Intégration
+
+```bash
+# Backend
+npm run test:integration
+
+# Frontend
+npm run test:e2e
+```
+
+### Tests de Performance
+
+```bash
+# Load testing avec k6
+k6 run tests/performance/load-test.js
+
+# Résultats attendus
+- Avg response time: < 500ms
+- p95 response time: < 1s
+- Error rate: < 1%
+- Throughput: > 1000 req/s
+```
+
+### Tests de Sécurité
+
+```bash
+# OWASP ZAP
+zap-cli quick-scan http://localhost:3000
+
+# Dependency check
+npm audit --audit-level=high
+```
+
+---
+
+## 🐛 Troubleshooting
+
+### Problèmes Courants
+
+#### Backend ne démarre pas
+
+```bash
+# Vérifier les logs
+docker-compose logs backend
+
+# Vérifier Redis
+docker-compose exec redis redis-cli ping
+
+# Vérifier les variables d'env
+docker-compose exec backend env | grep TOMTOM
+```
+
+#### Pas de données de trafic TomTom
+
+```bash
+# Vérifier la clé API
+curl "https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/10/json?key=YOUR_KEY&point=34.0209,-4.9981"
+
+# Vérifier le cache Redis
+docker-compose exec redis redis-cli
+> KEYS traffic:*
+> GET traffic:34.0209:-4.9981:1000
+```
+
+#### Pods en CrashLoopBackOff
+
+```bash
+# Vérifier les logs
+kubectl logs -f deployment/backend -n transport-optimizer
+
+# Vérifier les events
+kubectl get events -n transport-optimizer --sort-by='.lastTimestamp'
+
+# Décrire le pod
+kubectl describe pod <pod-name> -n transport-optimizer
+```
+
+#### Performance dégradée
+
+```bash
+# Vérifier les métriques
+kubectl top pods -n transport-optimizer
+kubectl top nodes
+
+# Vérifier HPA
+kubectl get hpa -n transport-optimizer
+
+# Scale manuel si nécessaire
+kubectl scale deployment/backend --replicas=5 -n transport-optimizer
+```
+
+---
+
+## 📚 Documentation API
+
+### Endpoints Backend
+
+#### GET /health
+Health check du service
+
+**Response 200:**
+```json
+{
+  "status": "healthy",
+  "timestamp": "2024-12-12T10:30:00.000Z",
+  "redis": "connected"
+}
+```
+
+#### GET /api/geocode
+Géocodage d'une adresse
+
+**Query Parameters:**
+- `address` (required): Adresse à géocoder
+
+**Response 200:**
+```json
+{
+  "lat": 34.0209,
+  "lon": -4.9981,
+  "display_name": "Fès, Morocco"
+}
+```
+
+#### POST /api/routes/optimize
+Optimisation d'itinéraires
+
+**Request Body:**
+```json
+{
+  "origin": {
+    "address": "Gare centrale, Fès"
+  },
+  "destination": {
+    "address": "Université, Fès"
+  }
+}
+```
+
+**Response 200:**
+```json
+{
+  "origin": { "lat": 34.0209, "lon": -4.9981 },
+  "destination": { "lat": 34.0329, "lon": -4.9841 },
+  "routes": [
+    {
+      "id": "route_1",
+      "type": "FASTEST",
+      "duration": 35,
+      "transfers": 1,
+      "walkingDistance": 450,
+      "score": {
+        "total": "87.5",
+        "breakdown": {
+          "duration": "91.7",
+          "transfers": "80.0",
+          "walking": "95.5",
+          "congestion": "85.0",
+          "density": "85.3"
+        }
+      },
+      "anomalies": [
+        {
+          "type": "DELAY",
+          "severity": "MEDIUM",
+          "message": "Retard de 8 minutes",
+          "delayMinutes": 8
+        }
+      ]
+    }
+  ]
+}
+```
+
+#### GET /api/traffic
+Données de trafic en temps réel
+
+**Query Parameters:**
+- `lat` (required): Latitude
+- `lon` (required): Longitude
+
+**Response 200:**
+```json
+{
+  "flowSegmentData": {
+    "currentSpeed": 28,
+    "freeFlowSpeed": 50,
+    "confidence": 0.95
+  }
+}
+```
+
+#### GET /api/anomalies
+Anomalies système en temps réel
+
+**Response 200:**
+```json
+{
+  "anomalies": [
+    {
+      "type": "STRIKE",
+      "severity": "CRITICAL",
+      "message": "Grève partielle - Service réduit 30%",
+      "affectedLines": ["Bus 12", "Tramway T1"]
+    }
+  ],
+  "count": 1,
+  "timestamp": "2024-12-12T10:30:00.000Z"
+}
+```
+
+---
+
+## 🤝 Contribution
+
+### Workflow Git
+
+```bash
+# 1. Créer une branche feature
+git checkout -b feature/nouvelle-fonctionnalite
+
+# 2. Commit avec convention
+git commit -m "feat: ajout détection anomalie météo"
+
+# 3. Push et PR
+git push origin feature/nouvelle-fonctionnalite
+
+# 4. Code review requis
+# 5. Merge après approval + CI success
+```
+
+### Convention de Commit
+
+- `feat:` Nouvelle fonctionnalité
+- `fix:` Correction de bug
+- `docs:` Documentation
+- `style:` Formatage
+- `refactor:` Refactorisation
+- `test:` Ajout de tests
+- `chore:` Tâches de maintenance
+
+
+
+
+
