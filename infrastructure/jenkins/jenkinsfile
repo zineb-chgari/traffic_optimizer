@@ -1,39 +1,94 @@
 pipeline {
     agent any
+
     environment {
-        PATH = "C:\\Windows\\System32;C:\\Windows;C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\;C:\\Program Files\\Python313\\;C:\\Program Files\\Python313\\Scripts\\"
+        // Nom des images Docker locales
+        FRONT_IMAGE = "traffic_front"
+        BACK_IMAGE  = "traffic_back"
+
+        // Registry Docker (laisser vide si pas de push)
+        DOCKER_REGISTRY = ""  // ex: docker.io/username
     }
+
     stages {
+        stage('Checkout') {
+            steps {
+                echo "[INFO] Checkout code from Git"
+                checkout scm
+
+                // Stocker le commit actuel pour tag
+                script {
+                    GIT_COMMIT = bat(returnStdout: true, script: '"C:\\Program Files\\Git\\cmd\\git.exe" rev-parse --short HEAD').trim()
+                    echo "Current commit: ${GIT_COMMIT}"
+                }
+            }
+        }
+
         stage('Check Git & Docker') {
             steps {
                 bat '"C:\\Program Files\\Git\\cmd\\git.exe" --version'
                 bat '"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe" --version'
-                bat 'echo %PATH%'
             }
         }
-        stage('Checkout') {
+
+        stage('Build Frontend Docker') {
             steps {
-                echo '[INFO] Checking out code from Git...'
-                checkout([$class: 'GitSCM', branches: [[name: '*/main']],
-                          userRemoteConfigs: [[url: 'https://github.com/zineb-chgari/traffic_optimizer.git']]])
-                // Afficher le dernier commit
-                bat '"C:\\Program Files\\Git\\cmd\\git.exe" log -1 --pretty=oneline'
+                echo "[INFO] Building frontend Docker image..."
+                bat "docker build -f frontend/Dockerfile -t %FRONT_IMAGE%:%GIT_COMMIT% frontend"
+
+                // Healthcheck après build
+                echo "[INFO] Checking frontend health..."
+                bat """
+                    docker run -d --name temp_front -p 8080:80 %FRONT_IMAGE%:%GIT_COMMIT%
+                    timeout /t 10
+                    curl -f http://localhost:8080 || exit 1
+                    docker stop temp_front
+                    docker rm temp_front
+                """
             }
         }
-        stage('Install Dependencies') {
+
+        stage('Build Backend Docker') {
             steps {
-                echo '[INFO] Installing dependencies...'
-                // bat 'pip install -r requirements.txt' // Décommenter si Python
+                echo "[INFO] Building backend Docker image..."
+                bat "docker build -f backend/Dockerfile -t %BACK_IMAGE%:%GIT_COMMIT% backend"
+
+                // Healthcheck après build
+                echo "[INFO] Checking backend health..."
+                bat """
+                    docker run -d --name temp_back -p 3000:3000 %BACK_IMAGE%:%GIT_COMMIT%
+                    timeout /t 10
+                    curl -f http://localhost:3000/health || exit 1
+                    docker stop temp_back
+                    docker rm temp_back
+                """
+            }
+        }
+
+        stage('Optional: Push Docker Images') {
+            when {
+                expression { return env.DOCKER_REGISTRY?.trim() }
+            }
+            steps {
+                echo "[INFO] Pushing Docker images to registry..."
+                bat "docker tag %FRONT_IMAGE%:%GIT_COMMIT% %DOCKER_REGISTRY%/%FRONT_IMAGE%:%GIT_COMMIT%"
+                bat "docker tag %BACK_IMAGE%:%GIT_COMMIT% %DOCKER_REGISTRY%/%BACK_IMAGE%:%GIT_COMMIT%"
+                bat "docker push %DOCKER_REGISTRY%/%FRONT_IMAGE%:%GIT_COMMIT%"
+                bat "docker push %DOCKER_REGISTRY%/%BACK_IMAGE%:%GIT_COMMIT%"
             }
         }
     }
+
     post {
         always {
-            echo '[INFO] Cleaning up Docker...'
-            bat '"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe" system prune -f || exit 0'
+            echo "[INFO] Cleaning up Docker..."
+            bat 'docker system prune -f || exit 0'
+        }
+        success {
+            echo "[SUCCESS] Pipeline finished successfully!"
         }
         failure {
-            echo '[ERROR] Pipeline failed'
+            echo "[ERROR] Pipeline failed!"
         }
     }
 }
