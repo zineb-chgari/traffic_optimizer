@@ -2,24 +2,26 @@ pipeline {
     agent any
 
     environment {
-        // Variables Docker
-        DOCKER_PATH = '"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe"'
-        FRONT_IMAGE = "traffic_front"
-        BACK_IMAGE = "traffic_back"
+        // Commit court pour tag Docker
+        GIT_COMMIT = ''
+        // Paramètres Docker Hub (à configurer plus tard)
+        DOCKER_USER = credentials('docker-username') // Jenkins credential ID
+        DOCKER_PASS = credentials('docker-password')
+        FRONT_IMAGE = ''
+        BACK_IMAGE = ''
     }
 
     stages {
         stage('Checkout SCM') {
             steps {
                 echo "[INFO] Checkout code from Git"
-                checkout([
-                    $class: 'GitSCM',
-                    branches: [[name: '*/main']],
-                    userRemoteConfigs: [[url: 'https://github.com/zineb-chgari/traffic_optimizer.git']]
-                ])
+                checkout scm
                 script {
+                    // Commit court pour tag
                     GIT_COMMIT = bat(script: '"C:\\Program Files\\Git\\cmd\\git.exe" rev-parse --short HEAD', returnStdout: true).trim()
-                    echo "Current commit: ${GIT_COMMIT}"
+                    FRONT_IMAGE = "traffic_front:${GIT_COMMIT}"
+                    BACK_IMAGE = "traffic_back:${GIT_COMMIT}"
+                    echo "[INFO] Current commit: ${GIT_COMMIT}"
                 }
             }
         }
@@ -27,30 +29,37 @@ pipeline {
         stage('Check Git & Docker') {
             steps {
                 bat '"C:\\Program Files\\Git\\cmd\\git.exe" --version'
-                bat "${DOCKER_PATH} --version"
+                bat '"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe" --version'
             }
         }
 
         stage('Build Frontend Docker') {
             steps {
                 echo "[INFO] Building frontend Docker image..."
-                bat "${DOCKER_PATH} build -f frontend/Dockerfile -t %FRONT_IMAGE%:%GIT_COMMIT% frontend"
+                bat "\"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe\" build -f frontend/Dockerfile -t ${FRONT_IMAGE} frontend"
             }
         }
 
         stage('Build Backend Docker') {
             steps {
                 echo "[INFO] Building backend Docker image..."
-                bat "${DOCKER_PATH} build -f backend/Dockerfile -t %BACK_IMAGE%:%GIT_COMMIT% backend"
+                bat "\"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe\" build -f backend/Dockerfile -t ${BACK_IMAGE} backend"
             }
         }
 
         stage('Optional: Push Docker Images') {
             steps {
-                echo "[INFO] Push Docker images (if needed)"
-                // Décommente si tu veux pousser sur un registry
-                // bat "${DOCKER_PATH} tag %FRONT_IMAGE%:%GIT_COMMIT% myregistry/traffic_front:%GIT_COMMIT%"
-                // bat "${DOCKER_PATH} push myregistry/traffic_front:%GIT_COMMIT%"
+                echo "[INFO] Push Docker images (if registry configured)"
+                script {
+                    // Vérifie si les credentials Docker sont définis
+                    if (DOCKER_USER && DOCKER_PASS) {
+                        bat "\"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe\" login -u %DOCKER_USER% -p %DOCKER_PASS%"
+                        bat "\"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe\" push ${FRONT_IMAGE}"
+                        bat "\"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe\" push ${BACK_IMAGE}"
+                    } else {
+                        echo "[INFO] Docker credentials not configured. Skipping push."
+                    }
+                }
             }
         }
     }
@@ -58,7 +67,7 @@ pipeline {
     post {
         always {
             echo "[INFO] Cleaning up Docker..."
-            bat "${DOCKER_PATH} system prune -f || exit 0"
+            bat '"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe" system prune -f || exit 0'
         }
         success {
             echo "[SUCCESS] Pipeline finished successfully!"
