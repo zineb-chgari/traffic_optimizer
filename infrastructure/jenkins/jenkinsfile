@@ -1,22 +1,21 @@
 pipeline {
     agent any
 
-    environment {
-        GIT_REPO = 'https://github.com/zineb-chgari/traffic_optimizer.git'
-        COMMIT_SHORT = ''
-    }
-
     stages {
         stage('Checkout SCM') {
             steps {
-                echo "[INFO] Checking out code from Git"
                 checkout([$class: 'GitSCM',
                     branches: [[name: '*/main']],
-                    userRemoteConfigs: [[url: env.GIT_REPO]]
+                    userRemoteConfigs: [[url: 'https://github.com/zineb-chgari/traffic_optimizer.git']]
                 ])
                 script {
-                    COMMIT_SHORT = bat(returnStdout: true, script: '"C:\\Program Files\\Git\\cmd\\git.exe" rev-parse --short HEAD').trim()
-                    echo "Current commit: ${COMMIT_SHORT}"
+                    // Déclarer la variable correctement
+                    def COMMIT_SHORT = bat(
+                        returnStdout: true, 
+                        script: '"C:\\Program Files\\Git\\cmd\\git.exe" rev-parse --short HEAD'
+                    ).trim()
+                    env.COMMIT_SHORT = COMMIT_SHORT
+                    echo "Current commit: ${env.COMMIT_SHORT}"
                 }
             }
         }
@@ -30,15 +29,17 @@ pipeline {
 
         stage('Build Frontend Docker') {
             steps {
-                echo "[INFO] Building frontend Docker image..."
-                bat "\"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe\" build -f frontend/Dockerfile -t traffic_front:${COMMIT_SHORT} frontend"
+                script {
+                    bat "\"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe\" build -f frontend/Dockerfile -t traffic_front:${env.COMMIT_SHORT} frontend"
+                }
             }
         }
 
         stage('Build Backend Docker') {
             steps {
-                echo "[INFO] Building backend Docker image..."
-                bat "\"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe\" build -f backend/Dockerfile -t traffic_back:${COMMIT_SHORT} backend"
+                script {
+                    bat "\"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe\" build -f backend/Dockerfile -t traffic_back:${env.COMMIT_SHORT} backend"
+                }
             }
         }
 
