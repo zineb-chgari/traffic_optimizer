@@ -4,8 +4,6 @@ pipeline {
     environment {
         GIT_REPO = 'https://github.com/zineb-chgari/traffic_optimizer.git'
         COMMIT_SHORT = ''
-        // DOCKER_USER = credentials('docker-username')  // à configurer plus tard
-        // DOCKER_PASSWORD = credentials('docker-password')
     }
 
     stages {
@@ -47,31 +45,26 @@ pipeline {
         stage('Deploy with Ansible (Placeholder)') {
             steps {
                 echo "[INFO] Ansible deployment placeholder"
-                // Ici tu pourras exécuter ansible-playbook plus tard
             }
         }
 
         stage('Provision Infra with Terraform (Placeholder)') {
             steps {
                 echo "[INFO] Terraform provisioning placeholder"
-                // Ici tu pourras exécuter terraform init/apply plus tard
             }
         }
 
         stage('Deploy to Kubernetes (Placeholder)') {
             steps {
                 echo "[INFO] Kubernetes deployment placeholder"
-                // Ici tu pourras exécuter kubectl apply plus tard
             }
         }
     }
 
     post {
         always {
-            node {
-                echo "[INFO] Cleaning up Docker..."
-                bat '"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe" system prune -f || exit 0'
-            }
+            echo "[INFO] Cleaning up Docker..."
+            bat '"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe" system prune -f || exit 0'
         }
         success {
             echo "[SUCCESS] Pipeline finished successfully!"
