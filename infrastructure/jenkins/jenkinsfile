@@ -2,26 +2,30 @@ pipeline {
     agent any
     
     environment {
-        // Docker Registry
+        // ===== Docker Registry =====
         DOCKER_REGISTRY = 'registry.example.com'
         DOCKER_CREDENTIALS = 'docker-registry-credentials'
         
-        // Application versions
+        // ===== Application versions =====
         BACKEND_IMAGE = "${DOCKER_REGISTRY}/transport-backend"
         FRONTEND_IMAGE = "${DOCKER_REGISTRY}/transport-frontend"
-        VERSION = "${env.BUILD_NUMBER}-${env.GIT_COMMIT.take(7)}"
+        VERSION = "${env.BUILD_NUMBER}-${env.GIT_COMMIT?.take(7) ?: 'unknown'}"
         
-        // Kubernetes
+        // ===== Kubernetes =====
         K8S_NAMESPACE = 'transport-optimizer'
         K8S_CREDENTIALS = 'kubeconfig'
         
-        // Security scanning
+        // ===== Security scanning =====
         TRIVY_VERSION = 'latest'
         SONAR_PROJECT_KEY = 'transport-optimizer'
         
-        // Notification
+        // ===== Notification =====
         SLACK_CHANNEL = '#devops-alerts'
         SLACK_CREDENTIALS = 'slack-webhook'
+        
+        // ===== Paths complets =====
+        GIT_CMD = '"C:\\Program Files\\Git\\cmd\\git.exe"'
+        DOCKER_CMD = '"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe"'
     }
     
     options {
@@ -32,25 +36,36 @@ pipeline {
     }
     
     stages {
+        // ---------------------------
+        stage('Check Git & Docker') {
+            steps {
+                bat "${GIT_CMD} --version"
+                bat "${DOCKER_CMD} --version"
+                bat 'echo %PATH%'
+            }
+        }
+        
+        // ---------------------------
         stage('Checkout') {
             steps {
                 script {
                     echo "[INFO] Checking out code from Git..."
                     checkout scm
                     
-                    // Get commit info
                     env.GIT_COMMIT_MSG = bat(
-                        script: 'git log -1 --pretty=%B',
+                        script: "${GIT_CMD} log -1 --pretty=%B",
                         returnStdout: true
                     ).trim()
+                    
                     env.GIT_AUTHOR = bat(
-                        script: 'git log -1 --pretty=%an',
+                        script: "${GIT_CMD} log -1 --pretty=%an",
                         returnStdout: true
                     ).trim()
                 }
             }
         }
         
+        // ---------------------------
         stage('Install Dependencies') {
             parallel {
                 stage('Backend Dependencies') {
@@ -63,7 +78,6 @@ pipeline {
                         }
                     }
                 }
-                
                 stage('Frontend Dependencies') {
                     steps {
                         dir('frontend') {
@@ -77,6 +91,7 @@ pipeline {
             }
         }
         
+        // ---------------------------
         stage('Code Quality & Testing') {
             parallel {
                 stage('Backend Tests') {
@@ -90,7 +105,6 @@ pipeline {
                         }
                     }
                 }
-                
                 stage('Frontend Tests') {
                     steps {
                         dir('frontend') {
@@ -101,7 +115,6 @@ pipeline {
                         }
                     }
                 }
-                
                 stage('Lint Backend') {
                     steps {
                         dir('backend') {
@@ -112,7 +125,6 @@ pipeline {
                         }
                     }
                 }
-                
                 stage('Lint Frontend') {
                     steps {
                         dir('frontend') {
@@ -126,6 +138,7 @@ pipeline {
             }
         }
         
+        // ---------------------------
         stage('SonarQube Analysis') {
             steps {
                 script {
@@ -133,10 +146,10 @@ pipeline {
                         bat """
                             echo "[INFO] Running SonarQube analysis..."
                             sonar-scanner ^
-                              -Dsonar.projectKey=${SONAR_PROJECT_KEY} ^
-                              -Dsonar.sources=. ^
-                              -Dsonar.host.url=${SONAR_HOST_URL} ^
-                              -Dsonar.login=${SONAR_AUTH_TOKEN}
+                                -Dsonar.projectKey=${SONAR_PROJECT_KEY} ^
+                                -Dsonar.sources=. ^
+                                -Dsonar.host.url=%SONAR_HOST_URL% ^
+                                -Dsonar.login=%SONAR_AUTH_TOKEN%
                         """
                     }
                     
@@ -150,6 +163,7 @@ pipeline {
             }
         }
         
+        // ---------------------------
         stage('Build Docker Images') {
             parallel {
                 stage('Build Backend Image') {
@@ -157,20 +171,19 @@ pipeline {
                         dir('backend') {
                             script {
                                 echo "[INFO] Building backend Docker image..."
-                                docker.build("${BACKEND_IMAGE}:${VERSION}")
-                                docker.build("${BACKEND_IMAGE}:latest")
+                                bat "${DOCKER_CMD} build -t ${BACKEND_IMAGE}:${VERSION} ."
+                                bat "${DOCKER_CMD} tag ${BACKEND_IMAGE}:${VERSION} ${BACKEND_IMAGE}:latest"
                             }
                         }
                     }
                 }
-                
                 stage('Build Frontend Image') {
                     steps {
                         dir('frontend') {
                             script {
                                 echo "[INFO] Building frontend Docker image..."
-                                docker.build("${FRONTEND_IMAGE}:${VERSION}")
-                                docker.build("${FRONTEND_IMAGE}:latest")
+                                bat "${DOCKER_CMD} build -t ${FRONTEND_IMAGE}:${VERSION} ."
+                                bat "${DOCKER_CMD} tag ${FRONTEND_IMAGE}:${VERSION} ${FRONTEND_IMAGE}:latest"
                             }
                         }
                     }
@@ -178,6 +191,7 @@ pipeline {
             }
         }
         
+        // ---------------------------
         stage('Security Scanning') {
             parallel {
                 stage('Scan Backend Image') {
@@ -185,7 +199,7 @@ pipeline {
                         script {
                             echo "[INFO] Scanning backend image with Trivy..."
                             bat """
-                                docker run --rm -v //var/run/docker.sock://var/run/docker.sock ^
+                                ${DOCKER_CMD} run --rm -v //var/run/docker.sock://var/run/docker.sock ^
                                     aquasec/trivy:${TRIVY_VERSION} image ^
                                     --severity HIGH,CRITICAL ^
                                     --exit-code 0 ^
@@ -195,13 +209,12 @@ pipeline {
                         }
                     }
                 }
-                
                 stage('Scan Frontend Image') {
                     steps {
                         script {
                             echo "[INFO] Scanning frontend image with Trivy..."
                             bat """
-                                docker run --rm -v //var/run/docker.sock://var/run/docker.sock ^
+                                ${DOCKER_CMD} run --rm -v //var/run/docker.sock://var/run/docker.sock ^
                                     aquasec/trivy:${TRIVY_VERSION} image ^
                                     --severity HIGH,CRITICAL ^
                                     --exit-code 0 ^
@@ -211,12 +224,11 @@ pipeline {
                         }
                     }
                 }
-                
                 stage('Dependency Check') {
                     steps {
                         dir('frontend') {
                             bat '''
-                                echo "[INFO] Checking dependencies for vulnerabilities..."
+                                echo "[INFO] Checking frontend dependencies for vulnerabilities..."
                                 npm audit --audit-level=high || exit 0
                             '''
                         }
@@ -225,38 +237,32 @@ pipeline {
             }
         }
         
+        // ---------------------------
         stage('Push Docker Images') {
-            when {
-                branch 'main'
-            }
+            when { branch 'main' }
             steps {
                 script {
                     echo "[INFO] Pushing Docker images to registry..."
                     docker.withRegistry("https://${DOCKER_REGISTRY}", DOCKER_CREDENTIALS) {
-                        docker.image("${BACKEND_IMAGE}:${VERSION}").push()
-                        docker.image("${BACKEND_IMAGE}:latest").push()
-                        docker.image("${FRONTEND_IMAGE}:${VERSION}").push()
-                        docker.image("${FRONTEND_IMAGE}:latest").push()
+                        bat "${DOCKER_CMD} push ${BACKEND_IMAGE}:${VERSION}"
+                        bat "${DOCKER_CMD} push ${BACKEND_IMAGE}:latest"
+                        bat "${DOCKER_CMD} push ${FRONTEND_IMAGE}:${VERSION}"
+                        bat "${DOCKER_CMD} push ${FRONTEND_IMAGE}:latest"
                     }
                 }
             }
         }
         
+        // ---------------------------
         stage('Deploy to Staging') {
-            when {
-                branch 'develop'
-            }
+            when { branch 'develop' }
             steps {
                 script {
                     echo "[INFO] Deploying to Staging..."
                     withKubeConfig([credentialsId: K8S_CREDENTIALS]) {
                         bat """
-                            kubectl set image deployment/backend ^
-                                backend=${BACKEND_IMAGE}:${VERSION} ^
-                                -n ${K8S_NAMESPACE}-staging
-                            kubectl set image deployment/frontend ^
-                                frontend=${FRONTEND_IMAGE}:${VERSION} ^
-                                -n ${K8S_NAMESPACE}-staging
+                            kubectl set image deployment/backend backend=${BACKEND_IMAGE}:${VERSION} -n ${K8S_NAMESPACE}-staging
+                            kubectl set image deployment/frontend frontend=${FRONTEND_IMAGE}:${VERSION} -n ${K8S_NAMESPACE}-staging
                             kubectl rollout status deployment/backend -n ${K8S_NAMESPACE}-staging
                             kubectl rollout status deployment/frontend -n ${K8S_NAMESPACE}-staging
                         """
@@ -266,36 +272,29 @@ pipeline {
         }
         
         stage('Integration Tests') {
-            when {
-                branch 'develop'
-            }
+            when { branch 'develop' }
             steps {
                 dir('.') {
                     bat '''
                         echo "[INFO] Running integration tests..."
-                        sleep 30
+                        timeout /t 30
                         npm run test:integration || exit 0
                     '''
                 }
             }
         }
         
+        // ---------------------------
         stage('Deploy to Production') {
-            when {
-                branch 'main'
-            }
+            when { branch 'main' }
             steps {
                 script {
                     input message: 'Deploy to Production?', ok: 'Deploy'
                     echo "[INFO] Deploying to Production..."
                     withKubeConfig([credentialsId: K8S_CREDENTIALS]) {
                         bat """
-                            kubectl set image deployment/backend ^
-                                backend=${BACKEND_IMAGE}:${VERSION} ^
-                                -n ${K8S_NAMESPACE}
-                            kubectl set image deployment/frontend ^
-                                frontend=${FRONTEND_IMAGE}:${VERSION} ^
-                                -n ${K8S_NAMESPACE}
+                            kubectl set image deployment/backend backend=${BACKEND_IMAGE}:${VERSION} -n ${K8S_NAMESPACE}
+                            kubectl set image deployment/frontend frontend=${FRONTEND_IMAGE}:${VERSION} -n ${K8S_NAMESPACE}
                             kubectl rollout status deployment/backend -n ${K8S_NAMESPACE} --timeout=5m
                             kubectl rollout status deployment/frontend -n ${K8S_NAMESPACE} --timeout=5m
                             kubectl get pods -n ${K8S_NAMESPACE}
@@ -306,14 +305,12 @@ pipeline {
         }
         
         stage('Smoke Tests') {
-            when {
-                branch 'main'
-            }
+            when { branch 'main' }
             steps {
                 dir('.') {
                     bat '''
                         echo "[INFO] Running smoke tests..."
-                        sleep 30
+                        timeout /t 30
                         curl -f https://transport.example.com/health || exit 1
                         curl -f https://transport.example.com/api/health || exit 1
                     '''
@@ -322,9 +319,7 @@ pipeline {
         }
         
         stage('Performance Tests') {
-            when {
-                branch 'main'
-            }
+            when { branch 'main' }
             steps {
                 dir('.') {
                     bat '''
@@ -388,10 +383,10 @@ pipeline {
             }
         }
         always {
-            bat '''
-                echo "[INFO] Cleaning up..."
-                docker system prune -f || exit 0
-            '''
+            bat """
+                echo "[INFO] Cleaning up Docker..."
+                ${DOCKER_CMD} system prune -f || exit 0
+            """
             archiveArtifacts artifacts: '**/target/*.jar,**/build/**/*.js', allowEmptyArchive: true
             junit '**/test-results/**/*.xml'
         }
