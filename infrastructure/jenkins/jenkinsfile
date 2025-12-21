@@ -2,26 +2,23 @@ pipeline {
     agent any
 
     environment {
-        // Commit court pour tag Docker
-        GIT_COMMIT = ''
-        // Paramètres Docker Hub (à configurer plus tard)
-        DOCKER_USER = credentials('docker-username') // Jenkins credential ID
-        DOCKER_PASS = credentials('docker-password')
-        FRONT_IMAGE = ''
-        BACK_IMAGE = ''
+        GIT_REPO = 'https://github.com/zineb-chgari/traffic_optimizer.git'
+        COMMIT_SHORT = ''
+        // DOCKER_USER = credentials('docker-username')  // à configurer plus tard
+        // DOCKER_PASSWORD = credentials('docker-password')
     }
 
     stages {
         stage('Checkout SCM') {
             steps {
-                echo "[INFO] Checkout code from Git"
-                checkout scm
+                echo "[INFO] Checking out code from Git"
+                checkout([$class: 'GitSCM',
+                    branches: [[name: '*/main']],
+                    userRemoteConfigs: [[url: env.GIT_REPO]]
+                ])
                 script {
-                    // Commit court pour tag
-                    GIT_COMMIT = bat(script: '"C:\\Program Files\\Git\\cmd\\git.exe" rev-parse --short HEAD', returnStdout: true).trim()
-                    FRONT_IMAGE = "traffic_front:${GIT_COMMIT}"
-                    BACK_IMAGE = "traffic_back:${GIT_COMMIT}"
-                    echo "[INFO] Current commit: ${GIT_COMMIT}"
+                    COMMIT_SHORT = bat(returnStdout: true, script: '"C:\\Program Files\\Git\\cmd\\git.exe" rev-parse --short HEAD').trim()
+                    echo "Current commit: ${COMMIT_SHORT}"
                 }
             }
         }
@@ -36,38 +33,45 @@ pipeline {
         stage('Build Frontend Docker') {
             steps {
                 echo "[INFO] Building frontend Docker image..."
-                bat "\"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe\" build -f frontend/Dockerfile -t ${FRONT_IMAGE} frontend"
+                bat "\"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe\" build -f frontend/Dockerfile -t traffic_front:${COMMIT_SHORT} frontend"
             }
         }
 
         stage('Build Backend Docker') {
             steps {
                 echo "[INFO] Building backend Docker image..."
-                bat "\"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe\" build -f backend/Dockerfile -t ${BACK_IMAGE} backend"
+                bat "\"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe\" build -f backend/Dockerfile -t traffic_back:${COMMIT_SHORT} backend"
             }
         }
 
-        stage('Optional: Push Docker Images') {
+        stage('Deploy with Ansible (Placeholder)') {
             steps {
-                echo "[INFO] Push Docker images (if registry configured)"
-                script {
-                    // Vérifie si les credentials Docker sont définis
-                    if (DOCKER_USER && DOCKER_PASS) {
-                        bat "\"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe\" login -u %DOCKER_USER% -p %DOCKER_PASS%"
-                        bat "\"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe\" push ${FRONT_IMAGE}"
-                        bat "\"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe\" push ${BACK_IMAGE}"
-                    } else {
-                        echo "[INFO] Docker credentials not configured. Skipping push."
-                    }
-                }
+                echo "[INFO] Ansible deployment placeholder"
+                // Ici tu pourras exécuter ansible-playbook plus tard
+            }
+        }
+
+        stage('Provision Infra with Terraform (Placeholder)') {
+            steps {
+                echo "[INFO] Terraform provisioning placeholder"
+                // Ici tu pourras exécuter terraform init/apply plus tard
+            }
+        }
+
+        stage('Deploy to Kubernetes (Placeholder)') {
+            steps {
+                echo "[INFO] Kubernetes deployment placeholder"
+                // Ici tu pourras exécuter kubectl apply plus tard
             }
         }
     }
 
     post {
         always {
-            echo "[INFO] Cleaning up Docker..."
-            bat '"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe" system prune -f || exit 0'
+            node {
+                echo "[INFO] Cleaning up Docker..."
+                bat '"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe" system prune -f || exit 0'
+            }
         }
         success {
             echo "[SUCCESS] Pipeline finished successfully!"
