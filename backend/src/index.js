@@ -25,8 +25,8 @@ const config = {
   port: process.env.PORT || 3000,
   redisUrl: process.env.REDIS_URL || 'redis://redis:6379',
   cacheTTL: 300,
-  osrmUrl: 'https://router.project-osrm.org',
-  tomtomApiKey: process.env.TOMTOM_API_KEY || 'YOUR_TOMTOM_API_KEY' // Remplacer par votre clé
+  openRouteServiceKey: process.env.ORS_API_KEY || '5b3ce3597851110001cf6248YOUR_KEY_HERE',
+  tomtomApiKey: process.env.TOMTOM_API_KEY || 'YOUR_TOMTOM_API_KEY'
 };
 
 /* ==================== APP ==================== */
@@ -106,6 +106,53 @@ class GeocodingService {
   }
 }
 
+/* ==================== OPENROUTESERVICE ==================== */
+class OpenRouteService {
+  static async getRoute(oLat, oLon, dLat, dLon, profile = 'driving-car') {
+    const cacheKey = `ors:${oLat}:${oLon}:${dLat}:${dLon}:${profile}`;
+    const cached = await CacheService.get(cacheKey);
+    if (cached) return cached;
+
+    try {
+      const res = await axios.post(
+        `https://api.openrouteservice.org/v2/directions/${profile}/geojson`,
+        {
+          coordinates: [[oLon, oLat], [dLon, dLat]],
+          elevation: false,
+          instructions: true
+        },
+        {
+          headers: {
+            'Authorization': config.openRouteServiceKey,
+            'Content-Type': 'application/json'
+          },
+          timeout: 10000
+        }
+      );
+
+      const route = res.data?.features?.[0];
+      if (!route) {
+        logger.warn('ORS: Aucune route trouvée, utilisation du fallback');
+        return RouteService.generateFallbackRoute(oLat, oLon, dLat, dLon);
+      }
+
+      const data = {
+        coordinates: route.geometry.coordinates.map(c => [c[1], c[0]]),
+        distance: route.properties.segments[0].distance,
+        duration: route.properties.segments[0].duration,
+        steps: route.properties.segments[0].steps || [],
+        fallback: false
+      };
+
+      await CacheService.set(cacheKey, data, 3600);
+      return data;
+    } catch (err) {
+      logger.warn(`OpenRouteService indisponible (${err.message}), utilisation du fallback`);
+      return RouteService.generateFallbackRoute(oLat, oLon, dLat, dLon);
+    }
+  }
+}
+
 /* ==================== TOMTOM TRAFFIC SERVICE ==================== */
 class TomTomTrafficService {
   static async getRealTimeTraffic(lat, lon, zoom = 10) {
@@ -114,7 +161,6 @@ class TomTomTrafficService {
     if (cached) return cached;
 
     try {
-      // API TomTom Traffic Flow
       const res = await axios.get(
         `https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/${zoom}/json`,
         {
@@ -139,11 +185,10 @@ class TomTomTrafficService {
         confidence: flowData.confidence || 0.5,
         roadClosure: flowData.roadClosure || false,
         coordinates: flowData.coordinates?.coordinate || [],
-        // Calcul du niveau de congestion (0-100)
         congestionLevel: Math.round((1 - (flowData.currentSpeed / flowData.freeFlowSpeed)) * 100)
       };
 
-      await CacheService.set(cacheKey, trafficData, 180); // Cache 3 min
+      await CacheService.set(cacheKey, trafficData, 180);
       return trafficData;
     } catch (err) {
       logger.warn(`TomTom Traffic API error: ${err.message}`);
@@ -169,11 +214,9 @@ class TomTomTrafficService {
     };
   }
 
-  // Obtenir le trafic le long d'un itinéraire
   static async getRouteTraffic(coordinates) {
     const trafficData = [];
     
-    // Échantillonner tous les 5 points pour ne pas surcharger l'API
     for (let i = 0; i < coordinates.length; i += 5) {
       const coord = coordinates[i];
       const traffic = await this.getRealTimeTraffic(coord[0], coord[1]);
@@ -183,7 +226,6 @@ class TomTomTrafficService {
       });
     }
 
-    // Calculer le niveau de congestion moyen
     const avgCongestion = trafficData.reduce((sum, t) => sum + t.congestionLevel, 0) / trafficData.length;
 
     return {
@@ -242,52 +284,8 @@ class RouteService {
   }
 }
 
-/* ==================== OSRM ==================== */
-class OSRMService {
-  static async getRoute(oLat, oLon, dLat, dLon) {
-    const cacheKey = `osrm:${oLat}:${oLon}:${dLat}:${dLon}`;
-    const cached = await CacheService.get(cacheKey);
-    if (cached) return cached;
-
-    try {
-      const res = await axios.get(
-        `${config.osrmUrl}/route/v1/driving/${oLon},${oLat};${dLon},${dLat}`,
-        { 
-          params: { 
-            overview: 'full', 
-            geometries: 'geojson',
-            steps: true // Obtenir les instructions détaillées
-          }, 
-          timeout: 5000 
-        }
-      );
-
-      const route = res.data?.routes?.[0];
-      if (!route) {
-        logger.warn('OSRM: Aucune route trouvée, utilisation du fallback');
-        return RouteService.generateFallbackRoute(oLat, oLon, dLat, dLon);
-      }
-
-      const data = {
-        coordinates: route.geometry.coordinates.map(c => [c[1], c[0]]),
-        distance: route.distance,
-        duration: route.duration,
-        steps: route.legs?.[0]?.steps || [],
-        fallback: false
-      };
-
-      await CacheService.set(cacheKey, data, 3600);
-      return data;
-    } catch (err) {
-      logger.warn(`OSRM indisponible (${err.message}), utilisation du fallback`);
-      return RouteService.generateFallbackRoute(oLat, oLon, dLat, dLon);
-    }
-  }
-}
-
 /* ==================== TRANSPORT PUBLIC SERVICE ==================== */
 class PublicTransportService {
-  // Simule les lignes de transport public à Casablanca
   static getTransportLines() {
     return {
       tramway: [
@@ -304,26 +302,6 @@ class PublicTransportService {
       ]
     };
   }
-
-  static generateTransportSegments(coordinates, lineIds) {
-    const segments = [];
-    const segmentLength = Math.floor(coordinates.length / (lineIds.length + 1));
-
-    lineIds.forEach((lineId, index) => {
-      const start = index * segmentLength;
-      const end = index === lineIds.length - 1 ? coordinates.length : (index + 1) * segmentLength;
-      
-      segments.push({
-        lineId,
-        startIndex: start,
-        endIndex: end,
-        stops: Math.floor((end - start) / 5), // Un arrêt tous les 5 points
-        coordinates: coordinates.slice(start, end)
-      });
-    });
-
-    return segments;
-  }
 }
 
 /* ==================== ROUTES ==================== */
@@ -331,6 +309,7 @@ app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
     redis: redisClient?.isOpen || false,
+    openrouteservice: config.openRouteServiceKey !== '5b3ce3597851110001cf6248YOUR_KEY_HERE',
     tomtom: config.tomtomApiKey !== 'YOUR_TOMTOM_API_KEY',
     timestamp: new Date().toISOString()
   });
@@ -392,13 +371,8 @@ app.post('/api/routes/optimize', async (req, res) => {
       return res.status(404).json({ error: 'Adresse introuvable' });
     }
 
-    // Obtenir l'itinéraire de base
-    const route = await OSRMService.getRoute(o.lat, o.lon, d.lat, d.lon);
-
-    // Obtenir le trafic en temps réel sur l'itinéraire
+    const route = await OpenRouteService.getRoute(o.lat, o.lon, d.lat, d.lon);
     const routeTraffic = await TomTomTrafficService.getRouteTraffic(route.coordinates);
-
-    // Obtenir les lignes de transport disponibles
     const transportLines = PublicTransportService.getTransportLines();
 
     res.json({ 
@@ -409,7 +383,7 @@ app.post('/api/routes/optimize', async (req, res) => {
         traffic: routeTraffic
       },
       transportLines,
-      message: route.fallback ? 'Itinéraire calculé en mode fallback (OSRM indisponible)' : null
+      message: route.fallback ? 'Itinéraire calculé en mode fallback (ORS indisponible)' : null
     });
   } catch (err) {
     logger.error(err.message);
@@ -422,6 +396,10 @@ app.use((req, res) => res.status(404).json({ error: 'Route non trouvée' }));
 /* ==================== SERVER ==================== */
 app.listen(config.port, () => {
   logger.info(`🚀 Backend démarré sur le port ${config.port}`);
+  if (config.openRouteServiceKey === '5b3ce3597851110001cf6248YOUR_KEY_HERE') {
+    logger.warn('⚠️ Clé API OpenRouteService non configurée - utilisera le mode fallback');
+    logger.info('📝 Obtenez une clé gratuite sur https://openrouteservice.org/dev/#/signup');
+  }
   if (config.tomtomApiKey === 'YOUR_TOMTOM_API_KEY') {
     logger.warn('⚠️ Clé API TomTom non configurée - utilisera le mode fallback');
   }
