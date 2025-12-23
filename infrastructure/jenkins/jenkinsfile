@@ -24,9 +24,8 @@ pipeline {
     stages {
         stage('Checkout SCM') {
             steps {
-                echo "[INFO] 🔍 Checking out code from Git"
+                echo "[INFO] Checking out code from Git"
                 script {
-                    // Clone ou pull selon si le repo existe
                     bat """
                         if exist .git (
                             "${GIT_EXEC}" pull origin main
@@ -35,20 +34,19 @@ pipeline {
                         )
                     """
                     
-                    // Récupérer le commit hash
                     env.COMMIT_SHORT = bat(
                         script: "\"${GIT_EXEC}\" rev-parse --short HEAD",
                         returnStdout: true
                     ).trim()
                     
-                    echo "📌 Current commit: ${env.COMMIT_SHORT}"
+                    echo "Current commit: ${env.COMMIT_SHORT}"
                 }
             }
         }
 
         stage('Environment Check') {
             steps {
-                echo "[INFO] 🔧 Checking environment"
+                echo "[INFO] Checking environment versions"
                 bat """
                     echo Git version:
                     "${GIT_EXEC}" --version
@@ -70,7 +68,7 @@ pipeline {
 
         stage('Validate Terraform') {
             steps {
-                echo "[INFO] ✅ Validating Terraform configuration"
+                echo "[INFO] Validating Terraform configuration"
                 dir('infrastructure/Terraform') {
                     bat """
                         terraform init
@@ -82,7 +80,7 @@ pipeline {
 
         stage('Build Backend Image') {
             steps {
-                echo "[INFO] 🐳 Building backend Docker image"
+                echo "[INFO] Building backend Docker image"
                 bat """
                     "${DOCKER_EXEC}" build ^
                         -f backend/Dockerfile ^
@@ -97,7 +95,7 @@ pipeline {
 
         stage('Build Frontend Image') {
             steps {
-                echo "[INFO] 🐳 Building frontend Docker image"
+                echo "[INFO] Building frontend Docker image"
                 bat """
                     "${DOCKER_EXEC}" build ^
                         -f frontend/Dockerfile ^
@@ -113,7 +111,7 @@ pipeline {
 
         stage('Test Backend') {
             steps {
-                echo "[INFO] 🧪 Testing backend"
+                echo "[INFO] Testing backend"
                 bat """
                     "${DOCKER_EXEC}" run --rm ^
                         -e REDIS_URL=redis://localhost:6379 ^
@@ -125,7 +123,7 @@ pipeline {
 
         stage('Create/Update Kind Cluster') {
             steps {
-                echo "[INFO] 🎯 Managing Kind cluster"
+                echo "[INFO] Managing Kind cluster"
                 script {
                     def clusterExists = bat(
                         script: "kind get clusters | findstr ${CLUSTER_NAME}",
@@ -133,9 +131,9 @@ pipeline {
                     ) == 0
                     
                     if (clusterExists) {
-                        echo "✅ Cluster ${CLUSTER_NAME} already exists"
+                        echo "Cluster ${CLUSTER_NAME} already exists"
                     } else {
-                        echo "🔨 Creating cluster ${CLUSTER_NAME}"
+                        echo "Creating cluster ${CLUSTER_NAME}"
                         bat """
                             kind create cluster ^
                                 --name ${CLUSTER_NAME} ^
@@ -144,7 +142,6 @@ pipeline {
                         """
                     }
                     
-                    // Export kubeconfig
                     bat "kind export kubeconfig --name ${CLUSTER_NAME}"
                 }
             }
@@ -152,12 +149,12 @@ pipeline {
 
         stage('Load Images to Kind') {
             steps {
-                echo "[INFO] 📦 Loading Docker images to Kind cluster"
+                echo "[INFO] Loading Docker images to Kind cluster"
                 bat """
                     kind load docker-image ${BACKEND_IMAGE}:latest --name ${CLUSTER_NAME}
                     kind load docker-image ${FRONTEND_IMAGE}:latest --name ${CLUSTER_NAME}
                     
-                    REM Verify images loaded
+                    echo Verifying loaded images
                     "${DOCKER_EXEC}" exec ${CLUSTER_NAME}-control-plane crictl images | findstr transport
                 """
             }
@@ -165,17 +162,12 @@ pipeline {
 
         stage('Deploy with Terraform') {
             steps {
-                echo "[INFO] 🚀 Deploying infrastructure with Terraform"
+                echo "[INFO] Deploying infrastructure with Terraform"
                 dir('infrastructure/Terraform') {
                     bat """
-                        REM Create secrets file if needed
                         echo Creating terraform.tfvars with API keys
-                        
-                        REM Apply Terraform
                         terraform plan -out=tfplan
                         terraform apply -auto-approve tfplan
-                        
-                        REM Show outputs
                         terraform output
                     """
                 }
@@ -184,7 +176,7 @@ pipeline {
 
         stage('Wait for Deployments') {
             steps {
-                echo "[INFO] ⏳ Waiting for pods to be ready"
+                echo "[INFO] Waiting for pods to be ready"
                 bat """
                     echo Waiting for Redis...
                     kubectl wait --for=condition=ready pod -l app=redis --timeout=120s
@@ -200,25 +192,20 @@ pipeline {
 
         stage('Verify Deployment') {
             steps {
-                echo "[INFO] 🔍 Verifying deployment"
+                echo "[INFO] Verifying deployment"
                 bat """
-                    echo ========================================
                     echo Deployments Status:
                     kubectl get deployments
                     
-                    echo ========================================
                     echo Services Status:
                     kubectl get services
                     
-                    echo ========================================
                     echo Pods Status:
                     kubectl get pods -o wide
                     
-                    echo ========================================
                     echo Backend Health Check:
                     kubectl exec deployment/backend -- wget -qO- http://localhost:3000/health || echo "Health check failed"
                     
-                    echo ========================================
                     echo Backend Logs:
                     kubectl logs -l app=backend --tail=20
                 """
@@ -227,7 +214,7 @@ pipeline {
 
         stage('Expose Services') {
             steps {
-                echo "[INFO] 🌐 Services access information"
+                echo "[INFO] Services access information"
                 script {
                     def nodeIP = bat(
                         script: 'kubectl get nodes -o jsonpath="{.items[0].status.addresses[?(@.type==\\"InternalIP\\")].address}"',
@@ -235,9 +222,7 @@ pipeline {
                     ).trim()
                     
                     echo """
-                    ========================================
-                    🎉 Deployment Successful!
-                    ========================================
+                    Deployment Successful!
                     Frontend: http://${nodeIP}:30001
                     Backend:  http://${nodeIP}:30002
                     Health:   http://${nodeIP}:30002/health
@@ -249,7 +234,6 @@ pipeline {
                     Then access:
                     Frontend: http://localhost:8080
                     Backend:  http://localhost:8000
-                    ========================================
                     """
                 }
             }
@@ -258,20 +242,15 @@ pipeline {
 
     post {
         always {
-            echo "[INFO] 🧹 Cleaning up"
+            echo "[INFO] Cleaning up"
             bat """
-                REM Clean dangling images
                 "${DOCKER_EXEC}" system prune -f || exit 0
-                
-                REM Archive build artifacts
                 if exist infrastructure\\Terraform\\tfplan del infrastructure\\Terraform\\tfplan
             """
         }
 
         success {
-            echo "[SUCCESS] ✅ Pipeline completed successfully!"
-            
-            // Send notification (configure email/Slack if needed)
+            echo "[SUCCESS] Pipeline completed successfully!"
             script {
                 def nodeIP = bat(
                     script: 'kubectl get nodes -o jsonpath="{.items[0].status.addresses[?(@.type==\\"InternalIP\\")].address}"',
@@ -282,15 +261,13 @@ pipeline {
                     Build: ${BUILD_NUMBER}
                     Commit: ${COMMIT_SHORT}
                     Frontend: http://${nodeIP}:30001
-                    Backend: http://${nodeIP}:30002
+                    Backend:  http://${nodeIP}:30002
                 """
             }
         }
 
         failure {
-            echo "[ERROR] ❌ Pipeline failed!"
-            
-            // Collect logs for debugging
+            echo "[ERROR] Pipeline failed!"
             bat """
                 echo Collecting failure logs...
                 kubectl get pods > pod-status.log
@@ -298,13 +275,11 @@ pipeline {
                 kubectl logs -l app=backend --tail=50 > backend-logs.log || exit 0
                 kubectl logs -l app=frontend --tail=50 > frontend-logs.log || exit 0
             """
-            
-            // Archive logs
             archiveArtifacts artifacts: '*.log', allowEmptyArchive: true
         }
 
         unstable {
-            echo "[WARNING] ⚠️ Pipeline completed with warnings"
+            echo "[WARNING] Pipeline completed with warnings"
         }
     }
 }
