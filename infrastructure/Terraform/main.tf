@@ -1,467 +1,397 @@
-# ================== TERRAFORM ==================
-# infrastructure/terraform/main.tf
-
 terraform {
-  required_version = ">= 1.0"
-  
   required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 5.0"
-    }
     kubernetes = {
       source  = "hashicorp/kubernetes"
-      version = "~> 2.20"
-    }
-  }
-
-  backend "s3" {
-    bucket         = "transport-optimizer-tfstate"
-    key            = "terraform.tfstate"
-    region         = "eu-west-1"
-    encrypt        = true
-    dynamodb_table = "terraform-lock"
-  }
-}
-
-provider "aws" {
-  region = var.aws_region
-  
-  default_tags {
-    tags = {
-      Project     = "TransportOptimizer"
-      Environment = var.environment
-      ManagedBy   = "Terraform"
+      version = "~> 3.0"
     }
   }
 }
 
-# VPC Configuration
-resource "aws_vpc" "main" {
-  cidr_block           = var.vpc_cidr
-  enable_dns_hostnames = true
-  enable_dns_support   = true
-
-  tags = {
-    Name = "transport-vpc-${var.environment}"
-  }
+provider "kubernetes" {
+  config_path = "~/.kube/config"
 }
 
-# Public Subnets
-resource "aws_subnet" "public" {
-  count             = length(var.availability_zones)
-  vpc_id            = aws_vpc.main.id
-  cidr_block        = cidrsubnet(var.vpc_cidr, 8, count.index)
-  availability_zone = var.availability_zones[count.index]
-
-  map_public_ip_on_launch = true
-
-  tags = {
-    Name                                           = "public-subnet-${count.index + 1}"
-    "kubernetes.io/role/elb"                      = "1"
-    "kubernetes.io/cluster/transport-${var.environment}" = "shared"
+# ==================== SECRETS ====================
+resource "kubernetes_secret_v1" "redis_credentials" {
+  metadata {
+    name = "redis-credentials"
   }
+
+  data = {
+    password = "monsecret"
+  }
+
+  type = "Opaque"
 }
 
-# Private Subnets
-resource "aws_subnet" "private" {
-  count             = length(var.availability_zones)
-  vpc_id            = aws_vpc.main.id
-  cidr_block        = cidrsubnet(var.vpc_cidr, 8, count.index + 100)
-  availability_zone = var.availability_zones[count.index]
-
-  tags = {
-    Name                                           = "private-subnet-${count.index + 1}"
-    "kubernetes.io/role/internal-elb"             = "1"
-    "kubernetes.io/cluster/transport-${var.environment}" = "shared"
+resource "kubernetes_secret_v1" "api_keys" {
+  metadata {
+    name = "api-keys"
   }
+
+  data = {
+    ors_api_key    = "eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6IjIwNjAxYzVlZmFlNjQ1OGZiOTY3ODUxNDg3NTY2MjBlIiwiaCI6Im11cm11cjY0In0="
+    tomtom_api_key = "YOUR_TOMTOM_API_KEY"  # ⚠️ Remplacez par votre vraie clé
+  }
+
+  type = "Opaque"
 }
 
-# Internet Gateway
-resource "aws_internet_gateway" "main" {
-  vpc_id = aws_vpc.main.id
-
-  tags = {
-    Name = "transport-igw-${var.environment}"
-  }
-}
-
-# NAT Gateway
-resource "aws_eip" "nat" {
-  count  = length(var.availability_zones)
-  domain = "vpc"
-
-  tags = {
-    Name = "nat-eip-${count.index + 1}"
-  }
-}
-
-resource "aws_nat_gateway" "main" {
-  count         = length(var.availability_zones)
-  allocation_id = aws_eip.nat[count.index].id
-  subnet_id     = aws_subnet.public[count.index].id
-
-  tags = {
-    Name = "nat-gateway-${count.index + 1}"
+# ==================== REDIS DEPLOYMENT ====================
+resource "kubernetes_deployment_v1" "redis" {
+  metadata {
+    name = "redis"
+    labels = {
+      app = "redis"
+    }
   }
 
-  depends_on = [aws_internet_gateway.main]
-}
-
-# Route Tables
-resource "aws_route_table" "public" {
-  vpc_id = aws_vpc.main.id
-
-  route {
-    cidr_block = "0.0.0.0/0"
-    gateway_id = aws_internet_gateway.main.id
-  }
-
-  tags = {
-    Name = "public-rt"
-  }
-}
-
-resource "aws_route_table" "private" {
-  count  = length(var.availability_zones)
-  vpc_id = aws_vpc.main.id
-
-  route {
-    cidr_block     = "0.0.0.0/0"
-    nat_gateway_id = aws_nat_gateway.main[count.index].id
-  }
-
-  tags = {
-    Name = "private-rt-${count.index + 1}"
-  }
-}
-
-# Route Table Associations
-resource "aws_route_table_association" "public" {
-  count          = length(var.availability_zones)
-  subnet_id      = aws_subnet.public[count.index].id
-  route_table_id = aws_route_table.public.id
-}
-
-resource "aws_route_table_association" "private" {
-  count          = length(var.availability_zones)
-  subnet_id      = aws_subnet.private[count.index].id
-  route_table_id = aws_route_table.private[count.index].id
-}
-
-# Security Group for EKS
-resource "aws_security_group" "eks_cluster" {
-  name_prefix = "eks-cluster-sg-"
-  vpc_id      = aws_vpc.main.id
-
-  ingress {
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-    description = "HTTPS for Kubernetes API"
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = {
-    Name = "eks-cluster-sg"
-  }
-}
-
-# EKS Cluster
-module "eks" {
-  source  = "terraform-aws-modules/eks/aws"
-  version = "~> 19.0"
-
-  cluster_name    = "transport-${var.environment}"
-  cluster_version = "1.28"
-
-  vpc_id     = aws_vpc.main.id
-  subnet_ids = concat(aws_subnet.private[*].id, aws_subnet.public[*].id)
-
-  cluster_endpoint_public_access = true
-
-  eks_managed_node_groups = {
-    general = {
-      desired_size = 3
-      min_size     = 2
-      max_size     = 10
-
-      instance_types = ["t3.medium"]
-      capacity_type  = "ON_DEMAND"
-
-      labels = {
-        role = "general"
-      }
-
-      tags = {
-        NodeGroup = "general"
+  spec {
+    replicas = 1
+    
+    selector {
+      match_labels = {
+        app = "redis"
       }
     }
 
-    spot = {
-      desired_size = 2
-      min_size     = 1
-      max_size     = 5
-
-      instance_types = ["t3.medium", "t3a.medium"]
-      capacity_type  = "SPOT"
-
-      labels = {
-        role = "spot"
+    template {
+      metadata {
+        labels = {
+          app = "redis"
+        }
       }
 
-      tags = {
-        NodeGroup = "spot"
+      spec {
+        container {
+          name              = "redis"
+          image             = "redis:7-alpine"
+          image_pull_policy = "IfNotPresent"
+
+          port {
+            container_port = 6379
+            name           = "redis"
+          }
+
+          command = ["redis-server"]
+          args    = ["--requirepass", "monsecret"]
+
+          # Health checks
+          liveness_probe {
+            exec {
+              command = ["redis-cli", "ping"]
+            }
+            initial_delay_seconds = 30
+            period_seconds        = 10
+            timeout_seconds       = 5
+          }
+
+          readiness_probe {
+            exec {
+              command = ["redis-cli", "ping"]
+            }
+            initial_delay_seconds = 5
+            period_seconds        = 5
+            timeout_seconds       = 3
+          }
+
+          resources {
+            requests = {
+              memory = "128Mi"
+              cpu    = "100m"
+            }
+            limits = {
+              memory = "256Mi"
+              cpu    = "200m"
+            }
+          }
+        }
       }
-    }
-  }
-
-  tags = {
-    Environment = var.environment
-  }
-}
-
-# ElastiCache Redis Cluster
-resource "aws_elasticache_subnet_group" "redis" {
-  name       = "transport-redis-subnet-group"
-  subnet_ids = aws_subnet.private[*].id
-}
-
-resource "aws_security_group" "redis" {
-  name_prefix = "redis-sg-"
-  vpc_id      = aws_vpc.main.id
-
-  ingress {
-    from_port       = 6379
-    to_port         = 6379
-    protocol        = "tcp"
-    security_groups = [aws_security_group.eks_cluster.id]
-    description     = "Redis from EKS"
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = {
-    Name = "redis-sg"
-  }
-}
-
-resource "aws_elasticache_cluster" "redis" {
-  cluster_id           = "transport-redis"
-  engine               = "redis"
-  node_type            = "cache.t3.micro"
-  num_cache_nodes      = 1
-  parameter_group_name = "default.redis7"
-  engine_version       = "7.0"
-  port                 = 6379
-  subnet_group_name    = aws_elasticache_subnet_group.redis.name
-  security_group_ids   = [aws_security_group.redis.id]
-
-  tags = {
-    Name = "transport-redis"
-  }
-}
-
-# CloudWatch Log Group
-resource "aws_cloudwatch_log_group" "app_logs" {
-  name              = "/aws/transport-optimizer/${var.environment}"
-  retention_in_days = 30
-
-  tags = {
-    Application = "TransportOptimizer"
-  }
-}
-
-# S3 Bucket for logs and backups
-resource "aws_s3_bucket" "backups" {
-  bucket = "transport-optimizer-backups-${var.environment}"
-
-  tags = {
-    Name = "backups"
-  }
-}
-
-resource "aws_s3_bucket_versioning" "backups" {
-  bucket = aws_s3_bucket.backups.id
-
-  versioning_configuration {
-    status = "Enabled"
-  }
-}
-
-resource "aws_s3_bucket_server_side_encryption_configuration" "backups" {
-  bucket = aws_s3_bucket.backups.id
-
-  rule {
-    apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
     }
   }
 }
 
-# Outputs
-output "cluster_endpoint" {
-  description = "Endpoint for EKS control plane"
-  value       = module.eks.cluster_endpoint
+resource "kubernetes_service_v1" "redis" {
+  metadata {
+    name = "redis-service"
+    labels = {
+      app = "redis"
+    }
+  }
+
+  spec {
+    selector = {
+      app = "redis"
+    }
+
+    port {
+      port        = 6379
+      target_port = 6379
+      name        = "redis"
+    }
+
+    type = "ClusterIP"
+  }
 }
 
-output "cluster_name" {
-  description = "Kubernetes Cluster Name"
-  value       = module.eks.cluster_name
+# ==================== BACKEND DEPLOYMENT ====================
+resource "kubernetes_deployment_v1" "backend" {
+  metadata {
+    name = "backend"
+    labels = {
+      app = "backend"
+    }
+  }
+
+  spec {
+    replicas = 3
+
+    selector {
+      match_labels = {
+        app = "backend"
+      }
+    }
+
+    template {
+      metadata {
+        labels = {
+          app = "backend"
+        }
+      }
+
+      spec {
+        container {
+          name              = "backend"
+          image             = "transport-backend:latest"
+          image_pull_policy = "IfNotPresent"
+
+          port {
+            container_port = 3000
+            name           = "http"
+          }
+
+          # ✅ CORRECTION: URL Redis avec authentification
+          env {
+            name  = "REDIS_URL"
+            value = "redis://:monsecret@redis-service:6379"
+          }
+
+          # Variables d'environnement pour les API keys
+          env {
+            name = "ORS_API_KEY"
+            value_from {
+              secret_key_ref {
+                name = kubernetes_secret_v1.api_keys.metadata[0].name
+                key  = "ors_api_key"
+              }
+            }
+          }
+
+          env {
+            name = "TOMTOM_API_KEY"
+            value_from {
+              secret_key_ref {
+                name = kubernetes_secret_v1.api_keys.metadata[0].name
+                key  = "tomtom_api_key"
+              }
+            }
+          }
+
+          env {
+            name  = "PORT"
+            value = "3000"
+          }
+
+          # Health checks
+          liveness_probe {
+            http_get {
+              path = "/health"
+              port = 3000
+            }
+            initial_delay_seconds = 30
+            period_seconds        = 10
+            timeout_seconds       = 5
+            failure_threshold     = 3
+          }
+
+          readiness_probe {
+            http_get {
+              path = "/health"
+              port = 3000
+            }
+            initial_delay_seconds = 10
+            period_seconds        = 5
+            timeout_seconds       = 3
+            failure_threshold     = 3
+          }
+
+          resources {
+            requests = {
+              memory = "256Mi"
+              cpu    = "200m"
+            }
+            limits = {
+              memory = "512Mi"
+              cpu    = "500m"
+            }
+          }
+        }
+      }
+    }
+  }
+
+  # Assure que Redis est déployé avant le backend
+  depends_on = [
+    kubernetes_deployment_v1.redis,
+    kubernetes_service_v1.redis
+  ]
 }
 
-output "redis_endpoint" {
-  description = "Redis cluster endpoint"
-  value       = aws_elasticache_cluster.redis.cache_nodes[0].address
+resource "kubernetes_service_v1" "backend" {
+  metadata {
+    name = "backend-service"
+    labels = {
+      app = "backend"
+    }
+  }
+
+  spec {
+    selector = {
+      app = "backend"
+    }
+
+    port {
+      port        = 3000
+      target_port = 3000
+      node_port   = 30002
+      name        = "http"
+    }
+
+    type = "NodePort"
+  }
 }
 
----
-# infrastructure/terraform/variables.tf
+# ==================== FRONTEND DEPLOYMENT ====================
+resource "kubernetes_deployment_v1" "frontend" {
+  metadata {
+    name = "frontend"
+    labels = {
+      app = "frontend"
+    }
+  }
 
-variable "aws_region" {
-  description = "AWS region"
-  type        = string
-  default     = "eu-west-1"
+  spec {
+    replicas = 2
+
+    selector {
+      match_labels = {
+        app = "frontend"
+      }
+    }
+
+    template {
+      metadata {
+        labels = {
+          app = "frontend"
+        }
+      }
+
+      spec {
+        container {
+          name              = "frontend"
+          image             = "transport-frontend:latest"
+          image_pull_policy = "IfNotPresent"
+
+          port {
+            container_port = 80
+            name           = "http"
+          }
+
+          # ⚠️ À adapter selon votre configuration
+          env {
+            name  = "API_URL"
+            value = "http://backend-service:3000"
+          }
+
+          # Health checks
+          liveness_probe {
+            http_get {
+              path = "/"
+              port = 80
+            }
+            initial_delay_seconds = 10
+            period_seconds        = 10
+            timeout_seconds       = 5
+          }
+
+          readiness_probe {
+            http_get {
+              path = "/"
+              port = 80
+            }
+            initial_delay_seconds = 5
+            period_seconds        = 5
+            timeout_seconds       = 3
+          }
+
+          resources {
+            requests = {
+              memory = "128Mi"
+              cpu    = "100m"
+            }
+            limits = {
+              memory = "256Mi"
+              cpu    = "200m"
+            }
+          }
+        }
+      }
+    }
+  }
+
+  # Assure que le backend est déployé avant le frontend
+  depends_on = [
+    kubernetes_deployment_v1.backend,
+    kubernetes_service_v1.backend
+  ]
 }
 
-variable "environment" {
-  description = "Environment name"
-  type        = string
-  default     = "production"
+resource "kubernetes_service_v1" "frontend" {
+  metadata {
+    name = "frontend-service"
+    labels = {
+      app = "frontend"
+    }
+  }
+
+  spec {
+    selector = {
+      app = "frontend"
+    }
+
+    port {
+      port        = 80
+      target_port = 80
+      node_port   = 30001
+      name        = "http"
+    }
+
+    type = "NodePort"
+  }
 }
 
-variable "vpc_cidr" {
-  description = "VPC CIDR block"
-  type        = string
-  default     = "10.0.0.0/16"
+# ==================== OUTPUTS ====================
+output "backend_nodeport" {
+  value       = "30002"
+  description = "Port NodePort du backend"
 }
 
-variable "availability_zones" {
-  description = "Availability zones"
-  type        = list(string)
-  default     = ["eu-west-1a", "eu-west-1b", "eu-west-1c"]
+output "frontend_nodeport" {
+  value       = "30001"
+  description = "Port NodePort du frontend"
 }
 
-variable "cluster_version" {
-  description = "Kubernetes version"
-  type        = string
-  default     = "1.28"
+output "redis_service" {
+  value       = "redis-service:6379"
+  description = "Service Redis interne"
 }
-
----
-# ================== ANSIBLE ==================
-# infrastructure/ansible/playbooks/deploy.yml
-
----
-- name: Deploy Transport Optimizer Application
-  hosts: kubernetes_master
-  become: yes
-  vars:
-    app_name: transport-optimizer
-    namespace: transport-optimizer
-    docker_registry: "{{ docker_registry_url }}"
-    app_version: "{{ lookup('env', 'APP_VERSION') | default('latest', true) }}"
-
-  tasks:
-    - name: Ensure kubectl is installed
-      apt:
-        name: kubectl
-        state: present
-      when: ansible_os_family == "Debian"
-
-    - name: Create namespace if not exists
-      kubernetes.core.k8s:
-        state: present
-        definition:
-          apiVersion: v1
-          kind: Namespace
-          metadata:
-            name: "{{ namespace }}"
-
-    - name: Deploy Redis
-      kubernetes.core.k8s:
-        state: present
-        src: "{{ playbook_dir }}/../kubernetes/redis-deployment.yaml"
-        namespace: "{{ namespace }}"
-
-    - name: Wait for Redis to be ready
-      kubernetes.core.k8s_info:
-        kind: Pod
-        namespace: "{{ namespace }}"
-        label_selectors:
-          - app=redis
-        wait: yes
-        wait_condition:
-          type: Ready
-          status: "True"
-        wait_timeout: 300
-
-    - name: Deploy Backend application
-      kubernetes.core.k8s:
-        state: present
-        src: "{{ playbook_dir }}/../kubernetes/backend-deployment.yaml"
-        namespace: "{{ namespace }}"
-
-    - name: Deploy Frontend application
-      kubernetes.core.k8s:
-        state: present
-        src: "{{ playbook_dir }}/../kubernetes/frontend-deployment.yaml"
-        namespace: "{{ namespace }}"
-
-    - name: Apply Ingress configuration
-      kubernetes.core.k8s:
-        state: present
-        src: "{{ playbook_dir }}/../kubernetes/ingress.yaml"
-        namespace: "{{ namespace }}"
-
-    - name: Verify deployment status
-      kubernetes.core.k8s_info:
-        kind: Deployment
-        namespace: "{{ namespace }}"
-        name: "{{ item }}"
-      register: deployment_status
-      with_items:
-        - redis
-        - backend
-        - frontend
-      until: deployment_status.resources[0].status.readyReplicas == deployment_status.resources[0].status.replicas
-      retries: 10
-      delay: 30
-
-    - name: Get service endpoints
-      kubernetes.core.k8s_info:
-        kind: Service
-        namespace: "{{ namespace }}"
-      register: services
-
-    - name: Display service information
-      debug:
-        msg: "Service {{ item.metadata.name }} is available at {{ item.spec.clusterIP }}"
-      loop: "{{ services.resources }}"
-
----
-# infrastructure/ansible/inventory/hosts.ini
-
-[kubernetes_master]
-k8s-master-1 ansible_host=10.0.1.10 ansible_user=ubuntu
-
-[kubernetes_workers]
-k8s-worker-1 ansible_host=10.0.1.11 ansible_user=ubuntu
-k8s-worker-2 ansible_host=10.0.1.12 ansible_user=ubuntu
-k8s-worker-3 ansible_host=10.0.1.13 ansible_user=ubuntu
-
-[all:vars]
-ansible_python_interpreter=/usr/bin/python3
-docker_registry_url=registry.example.com

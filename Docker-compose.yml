@@ -1,7 +1,7 @@
 version: '3.9'
 
 services:
-  redis:
+  redis-service:
     image: redis:7-alpine
     container_name: transport-redis-prod
     ports:
@@ -31,12 +31,12 @@ services:
     environment:
       NODE_ENV: production
       PORT: 3000
-      REDIS_URL: redis://redis:6379
+      REDIS_URL: redis://redis-service:6379
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3001}
     volumes:
       - ./backend/logs:/app/logs
     depends_on:
-      redis:
+      redis-service:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health"]
@@ -53,7 +53,6 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        # ✅ CORRECTION: Utiliser localhost car le navigateur accède au backend depuis l'extérieur
         REACT_APP_API_URL: http://localhost:3000/api
     image: transport-frontend:latest
     container_name: transport-frontend-prod

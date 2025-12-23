@@ -2,77 +2,309 @@ pipeline {
     agent any
 
     environment {
-        DOCKER_REGISTRY = '' // si tu utilises Docker Hub, mets ton login ici
-        COMMIT_SHORT = ''
+        // Configuration Docker
+        DOCKER_REGISTRY = '' // Laisser vide pour Docker Hub local
+        BACKEND_IMAGE = 'transport-backend'
+        FRONTEND_IMAGE = 'transport-frontend'
+        IMAGE_TAG = "${BUILD_NUMBER}"
+        
+        // Configuration Kubernetes
+        CLUSTER_NAME = 'k8s-terraform'
+        KUBECONFIG = "${WORKSPACE}/.kube/config"
+        
+        // Chemins
+        GIT_EXEC = 'C:\\Program Files\\Git\\cmd\\git.exe'
+        DOCKER_EXEC = 'C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe'
+        
+        // API Keys (à configurer dans Jenkins Credentials)
+        ORS_API_KEY = credentials('ors-api-key')
+        TOMTOM_API_KEY = credentials('tomtom-api-key')
     }
 
     stages {
         stage('Checkout SCM') {
             steps {
-                echo "[INFO] Checking out code from Git"
-                bat '"C:\\Program Files\\Git\\cmd\\git.exe" --version'
-                bat '"C:\\Program Files\\Git\\cmd\\git.exe" clone https://github.com/zineb-chgari/traffic_optimizer.git . || exit 0'
-                bat 'set COMMIT_SHORT="C:\\Program Files\\Git\\cmd\\git.exe" rev-parse --short HEAD'
-                echo "Current commit: %COMMIT_SHORT%"
+                echo "[INFO] 🔍 Checking out code from Git"
+                script {
+                    // Clone ou pull selon si le repo existe
+                    bat """
+                        if exist .git (
+                            "${GIT_EXEC}" pull origin main
+                        ) else (
+                            "${GIT_EXEC}" clone https://github.com/zineb-chgari/traffic_optimizer.git .
+                        )
+                    """
+                    
+                    // Récupérer le commit hash
+                    env.COMMIT_SHORT = bat(
+                        script: "\"${GIT_EXEC}\" rev-parse --short HEAD",
+                        returnStdout: true
+                    ).trim()
+                    
+                    echo "📌 Current commit: ${env.COMMIT_SHORT}"
+                }
             }
         }
 
-        stage('Check Git & Docker') {
+        stage('Environment Check') {
             steps {
-                echo "[INFO] Checking Git & Docker versions"
-                bat '"C:\\Program Files\\Git\\cmd\\git.exe" --version'
-                bat '"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe" --version'
+                echo "[INFO] 🔧 Checking environment"
+                bat """
+                    echo Git version:
+                    "${GIT_EXEC}" --version
+                    
+                    echo Docker version:
+                    "${DOCKER_EXEC}" --version
+                    
+                    echo Kubectl version:
+                    kubectl version --client
+                    
+                    echo Terraform version:
+                    terraform version
+                    
+                    echo Kind version:
+                    kind version
+                """
             }
         }
 
-        stage('Build Frontend Docker') {
+        stage('Validate Terraform') {
             steps {
-                echo "[INFO] Building frontend Docker image..."
-                bat '"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe" build -f frontend\\Dockerfile -t traffic_front .'
+                echo "[INFO] ✅ Validating Terraform configuration"
+                dir('infrastructure/Terraform') {
+                    bat """
+                        terraform init
+                        terraform validate
+                    """
+                }
             }
         }
 
-        stage('Build Backend Docker') {
+        stage('Build Backend Image') {
             steps {
-                echo "[INFO] Building backend Docker image..."
-                bat '"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe" build -f backend\\Dockerfile -t traffic_back .'
+                echo "[INFO] 🐳 Building backend Docker image"
+                bat """
+                    "${DOCKER_EXEC}" build ^
+                        -f backend/Dockerfile ^
+                        -t ${BACKEND_IMAGE}:latest ^
+                        -t ${BACKEND_IMAGE}:${IMAGE_TAG} ^
+                        --build-arg BUILD_DATE=%date% ^
+                        --build-arg VCS_REF=${COMMIT_SHORT} ^
+                        .
+                """
             }
         }
 
-        stage('Deploy with Ansible (Placeholder)') {
+        stage('Build Frontend Image') {
             steps {
-                echo "[INFO] Deploying with Ansible (to configure later)..."
-                // bat 'ansible-playbook deploy.yml' // à configurer
+                echo "[INFO] 🐳 Building frontend Docker image"
+                bat """
+                    "${DOCKER_EXEC}" build ^
+                        -f frontend/Dockerfile ^
+                        -t ${FRONTEND_IMAGE}:latest ^
+                        -t ${FRONTEND_IMAGE}:${IMAGE_TAG} ^
+                        --build-arg VITE_API_URL=http://localhost:8000 ^
+                        --build-arg BUILD_DATE=%date% ^
+                        --build-arg VCS_REF=${COMMIT_SHORT} ^
+                        .
+                """
             }
         }
 
-        stage('Provision Infra with Terraform (Placeholder)') {
+        stage('Test Backend') {
             steps {
-                echo "[INFO] Provisioning infrastructure with Terraform (to configure later)..."
-                // bat 'terraform init && terraform apply -auto-approve' // à configurer
+                echo "[INFO] 🧪 Testing backend"
+                bat """
+                    "${DOCKER_EXEC}" run --rm ^
+                        -e REDIS_URL=redis://localhost:6379 ^
+                        ${BACKEND_IMAGE}:latest ^
+                        node --version
+                """
             }
         }
 
-        stage('Deploy to Kubernetes (Placeholder)') {
+        stage('Create/Update Kind Cluster') {
             steps {
-                echo "[INFO] Deploying to Kubernetes (to configure later)..."
-                // bat 'kubectl apply -f k8s/' // à configurer
+                echo "[INFO] 🎯 Managing Kind cluster"
+                script {
+                    def clusterExists = bat(
+                        script: "kind get clusters | findstr ${CLUSTER_NAME}",
+                        returnStatus: true
+                    ) == 0
+                    
+                    if (clusterExists) {
+                        echo "✅ Cluster ${CLUSTER_NAME} already exists"
+                    } else {
+                        echo "🔨 Creating cluster ${CLUSTER_NAME}"
+                        bat """
+                            kind create cluster ^
+                                --name ${CLUSTER_NAME} ^
+                                --config infrastructure/kind/cluster-config.yaml ^
+                                --wait 5m
+                        """
+                    }
+                    
+                    // Export kubeconfig
+                    bat "kind export kubeconfig --name ${CLUSTER_NAME}"
+                }
+            }
+        }
+
+        stage('Load Images to Kind') {
+            steps {
+                echo "[INFO] 📦 Loading Docker images to Kind cluster"
+                bat """
+                    kind load docker-image ${BACKEND_IMAGE}:latest --name ${CLUSTER_NAME}
+                    kind load docker-image ${FRONTEND_IMAGE}:latest --name ${CLUSTER_NAME}
+                    
+                    REM Verify images loaded
+                    "${DOCKER_EXEC}" exec ${CLUSTER_NAME}-control-plane crictl images | findstr transport
+                """
+            }
+        }
+
+        stage('Deploy with Terraform') {
+            steps {
+                echo "[INFO] 🚀 Deploying infrastructure with Terraform"
+                dir('infrastructure/Terraform') {
+                    bat """
+                        REM Create secrets file if needed
+                        echo Creating terraform.tfvars with API keys
+                        
+                        REM Apply Terraform
+                        terraform plan -out=tfplan
+                        terraform apply -auto-approve tfplan
+                        
+                        REM Show outputs
+                        terraform output
+                    """
+                }
+            }
+        }
+
+        stage('Wait for Deployments') {
+            steps {
+                echo "[INFO] ⏳ Waiting for pods to be ready"
+                bat """
+                    echo Waiting for Redis...
+                    kubectl wait --for=condition=ready pod -l app=redis --timeout=120s
+                    
+                    echo Waiting for Backend...
+                    kubectl wait --for=condition=ready pod -l app=backend --timeout=120s
+                    
+                    echo Waiting for Frontend...
+                    kubectl wait --for=condition=ready pod -l app=frontend --timeout=120s
+                """
+            }
+        }
+
+        stage('Verify Deployment') {
+            steps {
+                echo "[INFO] 🔍 Verifying deployment"
+                bat """
+                    echo ========================================
+                    echo Deployments Status:
+                    kubectl get deployments
+                    
+                    echo ========================================
+                    echo Services Status:
+                    kubectl get services
+                    
+                    echo ========================================
+                    echo Pods Status:
+                    kubectl get pods -o wide
+                    
+                    echo ========================================
+                    echo Backend Health Check:
+                    kubectl exec deployment/backend -- wget -qO- http://localhost:3000/health || echo "Health check failed"
+                    
+                    echo ========================================
+                    echo Backend Logs:
+                    kubectl logs -l app=backend --tail=20
+                """
+            }
+        }
+
+        stage('Expose Services') {
+            steps {
+                echo "[INFO] 🌐 Services access information"
+                script {
+                    def nodeIP = bat(
+                        script: 'kubectl get nodes -o jsonpath="{.items[0].status.addresses[?(@.type==\\"InternalIP\\")].address}"',
+                        returnStdout: true
+                    ).trim()
+                    
+                    echo """
+                    ========================================
+                    🎉 Deployment Successful!
+                    ========================================
+                    Frontend: http://${nodeIP}:30001
+                    Backend:  http://${nodeIP}:30002
+                    Health:   http://${nodeIP}:30002/health
+                    
+                    For local access, run:
+                    kubectl port-forward svc/frontend-service 8080:80
+                    kubectl port-forward svc/backend-service 8000:3000
+                    
+                    Then access:
+                    Frontend: http://localhost:8080
+                    Backend:  http://localhost:8000
+                    ========================================
+                    """
+                }
             }
         }
     }
 
     post {
         always {
-            echo "[INFO] Cleaning up Docker..."
-            bat '"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe" system prune -f || exit 0'
+            echo "[INFO] 🧹 Cleaning up"
+            bat """
+                REM Clean dangling images
+                "${DOCKER_EXEC}" system prune -f || exit 0
+                
+                REM Archive build artifacts
+                if exist infrastructure\\Terraform\\tfplan del infrastructure\\Terraform\\tfplan
+            """
         }
 
         success {
-            echo "[SUCCESS] Pipeline finished successfully!"
+            echo "[SUCCESS] ✅ Pipeline completed successfully!"
+            
+            // Send notification (configure email/Slack if needed)
+            script {
+                def nodeIP = bat(
+                    script: 'kubectl get nodes -o jsonpath="{.items[0].status.addresses[?(@.type==\\"InternalIP\\")].address}"',
+                    returnStdout: true
+                ).trim()
+                
+                currentBuild.description = """
+                    Build: ${BUILD_NUMBER}
+                    Commit: ${COMMIT_SHORT}
+                    Frontend: http://${nodeIP}:30001
+                    Backend: http://${nodeIP}:30002
+                """
+            }
         }
 
         failure {
-            echo "[ERROR] Pipeline failed!"
+            echo "[ERROR] ❌ Pipeline failed!"
+            
+            // Collect logs for debugging
+            bat """
+                echo Collecting failure logs...
+                kubectl get pods > pod-status.log
+                kubectl describe pods >> pod-status.log
+                kubectl logs -l app=backend --tail=50 > backend-logs.log || exit 0
+                kubectl logs -l app=frontend --tail=50 > frontend-logs.log || exit 0
+            """
+            
+            // Archive logs
+            archiveArtifacts artifacts: '*.log', allowEmptyArchive: true
+        }
+
+        unstable {
+            echo "[WARNING] ⚠️ Pipeline completed with warnings"
         }
     }
 }
