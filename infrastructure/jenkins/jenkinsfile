@@ -186,29 +186,29 @@ pipeline {
     post {
         always {
             node {
-                withEnv(["DOCKER_EXEC=${DOCKER_EXEC}"]) {
-                    echo "[INFO] 🧹 Cleaning up"
-                    bat """
-                        "${DOCKER_EXEC}" system prune -f || exit 0
-                        if exist infrastructure\\Terraform\\tfplan del infrastructure\\Terraform\\tfplan
-                    """
-                }
+                echo "[INFO] 🧹 Cleaning up"
+                bat """
+                    "${DOCKER_EXEC}" system prune -f || exit 0
+                    if exist infrastructure\\Terraform\\tfplan del infrastructure\\Terraform\\tfplan
+                """
             }
         }
 
         success {
-            echo "[SUCCESS] ✅ Pipeline completed successfully!"
-            script {
-                def nodeIP = bat(
-                    script: 'kubectl get nodes -o jsonpath="{.items[0].status.addresses[?(@.type==\\"InternalIP\\")].address}"',
-                    returnStdout: true
-                ).trim()
-                currentBuild.description = """
-                    Build: ${BUILD_NUMBER}
-                    Commit: ${COMMIT_SHORT}
-                    Frontend: http://${nodeIP}:30001
-                    Backend: http://${nodeIP}:30002
-                """
+            node {
+                echo "[SUCCESS] ✅ Pipeline completed successfully!"
+                script {
+                    def nodeIP = bat(
+                        script: 'kubectl get nodes -o jsonpath="{.items[0].status.addresses[?(@.type==\\"InternalIP\\")].address}"',
+                        returnStdout: true
+                    ).trim()
+                    currentBuild.description = """
+                        Build: ${BUILD_NUMBER}
+                        Commit: ${COMMIT_SHORT}
+                        Frontend: http://${nodeIP}:30001
+                        Backend: http://${nodeIP}:30002
+                    """
+                }
             }
         }
 
