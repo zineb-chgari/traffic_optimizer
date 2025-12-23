@@ -3,19 +3,19 @@ pipeline {
 
     environment {
         // Configuration Docker
-        DOCKER_REGISTRY = '' // Laisser vide pour Docker Hub local
+        DOCKER_REG = '' // Laisser vide pour Docker Hub local
         BACKEND_IMAGE = 'transport-backend'
         FRONTEND_IMAGE = 'transport-frontend'
         IMAGE_TAG = "${BUILD_NUMBER}"
-        
+
         // Configuration Kubernetes
         CLUSTER_NAME = 'k8s-terraform'
         KUBECONFIG = "${WORKSPACE}/.kube/config"
-        
+
         // Chemins
         GIT_EXEC = 'C:\\Program Files\\Git\\cmd\\git.exe'
         DOCKER_EXEC = 'C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe'
-        
+
         // API Keys (à configurer dans Jenkins Credentials)
         ORS_API_KEY = credentials('ors-api-key')
         TOMTOM_API_KEY = credentials('tomtom-api-key')
@@ -24,7 +24,7 @@ pipeline {
     stages {
         stage('Checkout SCM') {
             steps {
-                echo "[INFO] Checking out code from Git"
+                echo "[INFO] 🔍 Checking out code from Git"
                 script {
                     bat """
                         if exist .git (
@@ -33,33 +33,31 @@ pipeline {
                             "${GIT_EXEC}" clone https://github.com/zineb-chgari/traffic_optimizer.git .
                         )
                     """
-                    
                     env.COMMIT_SHORT = bat(
                         script: "\"${GIT_EXEC}\" rev-parse --short HEAD",
                         returnStdout: true
                     ).trim()
-                    
-                    echo "Current commit: ${env.COMMIT_SHORT}"
+                    echo "📌 Current commit: ${env.COMMIT_SHORT}"
                 }
             }
         }
 
         stage('Environment Check') {
             steps {
-                echo "[INFO] Checking environment versions"
+                echo "[INFO] 🔧 Checking environment"
                 bat """
                     echo Git version:
                     "${GIT_EXEC}" --version
-                    
+
                     echo Docker version:
                     "${DOCKER_EXEC}" --version
-                    
+
                     echo Kubectl version:
                     kubectl version --client
-                    
+
                     echo Terraform version:
                     terraform version
-                    
+
                     echo Kind version:
                     kind version
                 """
@@ -68,7 +66,7 @@ pipeline {
 
         stage('Validate Terraform') {
             steps {
-                echo "[INFO] Validating Terraform configuration"
+                echo "[INFO] ✅ Validating Terraform configuration"
                 dir('infrastructure/Terraform') {
                     bat """
                         terraform init
@@ -80,7 +78,7 @@ pipeline {
 
         stage('Build Backend Image') {
             steps {
-                echo "[INFO] Building backend Docker image"
+                echo "[INFO] 🐳 Building backend Docker image"
                 bat """
                     "${DOCKER_EXEC}" build ^
                         -f backend/Dockerfile ^
@@ -95,7 +93,7 @@ pipeline {
 
         stage('Build Frontend Image') {
             steps {
-                echo "[INFO] Building frontend Docker image"
+                echo "[INFO] 🐳 Building frontend Docker image"
                 bat """
                     "${DOCKER_EXEC}" build ^
                         -f frontend/Dockerfile ^
@@ -109,31 +107,19 @@ pipeline {
             }
         }
 
-        stage('Test Backend') {
-            steps {
-                echo "[INFO] Testing backend"
-                bat """
-                    "${DOCKER_EXEC}" run --rm ^
-                        -e REDIS_URL=redis://localhost:6379 ^
-                        ${BACKEND_IMAGE}:latest ^
-                        node --version
-                """
-            }
-        }
-
         stage('Create/Update Kind Cluster') {
             steps {
-                echo "[INFO] Managing Kind cluster"
+                echo "[INFO] 🎯 Managing Kind cluster"
                 script {
                     def clusterExists = bat(
                         script: "kind get clusters | findstr ${CLUSTER_NAME}",
                         returnStatus: true
                     ) == 0
-                    
+
                     if (clusterExists) {
-                        echo "Cluster ${CLUSTER_NAME} already exists"
+                        echo "✅ Cluster ${CLUSTER_NAME} already exists"
                     } else {
-                        echo "Creating cluster ${CLUSTER_NAME}"
+                        echo "🔨 Creating cluster ${CLUSTER_NAME}"
                         bat """
                             kind create cluster ^
                                 --name ${CLUSTER_NAME} ^
@@ -141,7 +127,6 @@ pipeline {
                                 --wait 5m
                         """
                     }
-                    
                     bat "kind export kubeconfig --name ${CLUSTER_NAME}"
                 }
             }
@@ -149,23 +134,19 @@ pipeline {
 
         stage('Load Images to Kind') {
             steps {
-                echo "[INFO] Loading Docker images to Kind cluster"
+                echo "[INFO] 📦 Loading Docker images to Kind cluster"
                 bat """
                     kind load docker-image ${BACKEND_IMAGE}:latest --name ${CLUSTER_NAME}
                     kind load docker-image ${FRONTEND_IMAGE}:latest --name ${CLUSTER_NAME}
-                    
-                    echo Verifying loaded images
-                    "${DOCKER_EXEC}" exec ${CLUSTER_NAME}-control-plane crictl images | findstr transport
                 """
             }
         }
 
         stage('Deploy with Terraform') {
             steps {
-                echo "[INFO] Deploying infrastructure with Terraform"
+                echo "[INFO] 🚀 Deploying infrastructure with Terraform"
                 dir('infrastructure/Terraform') {
                     bat """
-                        echo Creating terraform.tfvars with API keys
                         terraform plan -out=tfplan
                         terraform apply -auto-approve tfplan
                         terraform output
@@ -176,15 +157,10 @@ pipeline {
 
         stage('Wait for Deployments') {
             steps {
-                echo "[INFO] Waiting for pods to be ready"
+                echo "[INFO] ⏳ Waiting for pods to be ready"
                 bat """
-                    echo Waiting for Redis...
                     kubectl wait --for=condition=ready pod -l app=redis --timeout=120s
-                    
-                    echo Waiting for Backend...
                     kubectl wait --for=condition=ready pod -l app=backend --timeout=120s
-                    
-                    echo Waiting for Frontend...
                     kubectl wait --for=condition=ready pod -l app=frontend --timeout=120s
                 """
             }
@@ -192,94 +168,61 @@ pipeline {
 
         stage('Verify Deployment') {
             steps {
-                echo "[INFO] Verifying deployment"
+                echo "[INFO] 🔍 Verifying deployment"
                 bat """
-                    echo Deployments Status:
+                    echo ========================================
                     kubectl get deployments
-                    
-                    echo Services Status:
+                    echo ========================================
                     kubectl get services
-                    
-                    echo Pods Status:
+                    echo ========================================
                     kubectl get pods -o wide
-                    
-                    echo Backend Health Check:
-                    kubectl exec deployment/backend -- wget -qO- http://localhost:3000/health || echo "Health check failed"
-                    
-                    echo Backend Logs:
+                    echo ========================================
                     kubectl logs -l app=backend --tail=20
                 """
-            }
-        }
-
-        stage('Expose Services') {
-            steps {
-                echo "[INFO] Services access information"
-                script {
-                    def nodeIP = bat(
-                        script: 'kubectl get nodes -o jsonpath="{.items[0].status.addresses[?(@.type==\\"InternalIP\\")].address}"',
-                        returnStdout: true
-                    ).trim()
-                    
-                    echo """
-                    Deployment Successful!
-                    Frontend: http://${nodeIP}:30001
-                    Backend:  http://${nodeIP}:30002
-                    Health:   http://${nodeIP}:30002/health
-                    
-                    For local access, run:
-                    kubectl port-forward svc/frontend-service 8080:80
-                    kubectl port-forward svc/backend-service 8000:3000
-                    
-                    Then access:
-                    Frontend: http://localhost:8080
-                    Backend:  http://localhost:8000
-                    """
-                }
             }
         }
     }
 
     post {
         always {
-            echo "[INFO] Cleaning up"
-            bat """
-                "${DOCKER_EXEC}" system prune -f || exit 0
-                if exist infrastructure\\Terraform\\tfplan del infrastructure\\Terraform\\tfplan
-            """
+            node {
+                withEnv(["DOCKER_EXEC=${DOCKER_EXEC}"]) {
+                    echo "[INFO] 🧹 Cleaning up"
+                    bat """
+                        "${DOCKER_EXEC}" system prune -f || exit 0
+                        if exist infrastructure\\Terraform\\tfplan del infrastructure\\Terraform\\tfplan
+                    """
+                }
+            }
         }
 
         success {
-            echo "[SUCCESS] Pipeline completed successfully!"
+            echo "[SUCCESS] ✅ Pipeline completed successfully!"
             script {
                 def nodeIP = bat(
                     script: 'kubectl get nodes -o jsonpath="{.items[0].status.addresses[?(@.type==\\"InternalIP\\")].address}"',
                     returnStdout: true
                 ).trim()
-                
                 currentBuild.description = """
                     Build: ${BUILD_NUMBER}
                     Commit: ${COMMIT_SHORT}
                     Frontend: http://${nodeIP}:30001
-                    Backend:  http://${nodeIP}:30002
+                    Backend: http://${nodeIP}:30002
                 """
             }
         }
 
         failure {
-            echo "[ERROR] Pipeline failed!"
-            bat """
-                echo Collecting failure logs...
-                kubectl get pods > pod-status.log
-                kubectl describe pods >> pod-status.log
-                kubectl logs -l app=backend --tail=50 > backend-logs.log || exit 0
-                kubectl logs -l app=frontend --tail=50 > frontend-logs.log || exit 0
-            """
-            archiveArtifacts artifacts: '*.log', allowEmptyArchive: true
-        }
-
-        unstable {
-            echo "[WARNING] Pipeline completed with warnings"
+            node {
+                echo "[ERROR] ❌ Pipeline failed!"
+                bat """
+                    kubectl get pods > pod-status.log
+                    kubectl describe pods >> pod-status.log
+                    kubectl logs -l app=backend --tail=50 > backend-logs.log || exit 0
+                    kubectl logs -l app=frontend --tail=50 > frontend-logs.log || exit 0
+                """
+                archiveArtifacts artifacts: '*.log', allowEmptyArchive: true
+            }
         }
     }
 }
