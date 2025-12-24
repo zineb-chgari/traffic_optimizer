@@ -2,84 +2,93 @@ pipeline {
     agent any
 
     environment {
-        // Remplace ces chemins par ceux où se trouvent kind.exe et kubectl.exe sur ton PC
-        PATH = "C:\\Users\\pc\\Downloads\\devops_projet;%PATH%"
-        DOCKER_REG = ''
-        BACKEND_IMAGE = 'transport-backend'
-        FRONTEND_IMAGE = 'transport-frontend'
-        IMAGE_TAG = "${BUILD_NUMBER}"
-        KUBECONFIG = "${WORKSPACE}\\.kube\\config"
+        // Ajouter le chemin vers kind, kubectl et docker
+        PATH = "${env.PATH};C:\\Users\\pc\\Downloads\\devops_projet"
     }
 
     stages {
+
         stage('Checkout SCM') {
             steps {
-                echo '=== Checking out SCM ==='
+                echo "=== Checking out SCM ==="
                 checkout scm
+            }
+        }
+
+        stage('Verify Tools') {
+            steps {
+                echo "=== Verifying required tools ==="
+                bat """
+                where cmd || (echo cmd not found & exit /b 1)
+                where kind || (echo kind not found & exit /b 1)
+                where kubectl || (echo kubectl not found & exit /b 1)
+                where docker || (echo docker not found & exit /b 1)
+                """
             }
         }
 
         stage('Setup Kind Cluster') {
             steps {
-                echo '=== Setting up Kind Cluster ==='
-                bat '''
+                echo "=== Setting up Kind Cluster ==="
+                bat """
                 kind delete cluster --name k8s-terraform 2>nul || echo No previous cluster
                 kubectl config delete-context kind-k8s-terraform 2>nul || echo No previous context
                 kind create cluster --name k8s-terraform --wait 120s
                 kind export kubeconfig --name k8s-terraform
                 kubectl cluster-info --context kind-k8s-terraform
-                '''
+                """
             }
         }
 
         stage('Build Docker Images') {
             steps {
-                echo '=== Building Docker Images ==='
-                bat '''
-                docker build -t %BACKEND_IMAGE%:%IMAGE_TAG% ./backend
-                docker build -t %FRONTEND_IMAGE%:%IMAGE_TAG% ./frontend
-                '''
+                echo "=== Building Docker Images ==="
+                bat """
+                docker build -t transport-backend:latest ./backend
+                docker build -t transport-frontend:latest ./frontend
+                """
             }
         }
 
         stage('Push Docker Images (Optional)') {
             steps {
-                echo '=== Pushing Docker Images ==='
-                bat '''
-                REM docker push %BACKEND_IMAGE%:%IMAGE_TAG%
-                REM docker push %FRONTEND_IMAGE%:%IMAGE_TAG%
-                '''
+                echo "=== Pushing Docker Images ==="
+                // Décommente et adapte si tu veux pousser les images
+                // bat "docker tag transport-backend:latest <registry>/transport-backend:latest"
+                // bat "docker push <registry>/transport-backend:latest"
             }
         }
 
         stage('Deploy to Kubernetes') {
             steps {
-                echo '=== Deploying to Kubernetes ==='
-                bat '''
-                kubectl apply -f k8s/backend-deployment.yaml
-                kubectl apply -f k8s/frontend-deployment.yaml
-                kubectl get pods
-                '''
+                echo "=== Deploying to Kubernetes ==="
+                bat """
+                kubectl apply -f k8s/
+                kubectl get pods -o wide
+                """
             }
         }
 
         stage('Cleanup') {
             steps {
-                echo '=== Cleanup ==='
-                bat '''
-                REM Optionnel : supprimer cluster Kind
-                REM kind delete cluster --name k8s-terraform
-                '''
+                echo "=== Cleanup ==="
+                bat """
+                docker system prune -f
+                kind delete cluster --name k8s-terraform
+                """
             }
         }
     }
 
     post {
-        success {
-            echo 'Pipeline finished successfully.'
+        always {
+            echo "Pipeline finished. Status: ${currentBuild.currentResult}"
         }
         failure {
-            echo 'Pipeline failed. Check logs.'
+            echo "Pipeline failed. Check logs for details."
+        }
+        success {
+            echo "Pipeline completed successfully!"
         }
     }
 }
