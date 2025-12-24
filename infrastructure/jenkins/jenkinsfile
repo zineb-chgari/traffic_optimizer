@@ -2,81 +2,84 @@ pipeline {
     agent any
 
     environment {
-        // Docker
-        DOCKER_REG = '' // si tu as un registry, mets-le ici
+        // Remplace ces chemins par ceux où se trouvent kind.exe et kubectl.exe sur ton PC
+        PATH = "C:\\Users\\pc\\Downloads\\devops_projet;%PATH%"
+        DOCKER_REG = ''
         BACKEND_IMAGE = 'transport-backend'
         FRONTEND_IMAGE = 'transport-frontend'
         IMAGE_TAG = "${BUILD_NUMBER}"
-
-        // Kubernetes / Kind
-        CLUSTER_NAME = 'k8s-terraform'
-        KUBECONFIG = "${WORKSPACE}/.kube/config"
+        KUBECONFIG = "${WORKSPACE}\\.kube\\config"
     }
 
     stages {
+        stage('Checkout SCM') {
+            steps {
+                echo '=== Checking out SCM ==='
+                checkout scm
+            }
+        }
+
         stage('Setup Kind Cluster') {
             steps {
-                echo "=== Setting up Kind Cluster ==="
-                bat """
-                kind delete cluster --name ${CLUSTER_NAME} 2>nul || echo No previous cluster
-                kubectl config delete-context kind-${CLUSTER_NAME} 2>nul || echo No previous context
-                kind create cluster --name ${CLUSTER_NAME} --wait 120s
-                kind export kubeconfig --name ${CLUSTER_NAME}
-                kubectl cluster-info --context kind-${CLUSTER_NAME}
-                """
+                echo '=== Setting up Kind Cluster ==='
+                bat '''
+                kind delete cluster --name k8s-terraform 2>nul || echo No previous cluster
+                kubectl config delete-context kind-k8s-terraform 2>nul || echo No previous context
+                kind create cluster --name k8s-terraform --wait 120s
+                kind export kubeconfig --name k8s-terraform
+                kubectl cluster-info --context kind-k8s-terraform
+                '''
             }
         }
 
         stage('Build Docker Images') {
             steps {
-                echo "=== Building Backend Docker Image ==="
-                bat "docker build -t ${BACKEND_IMAGE}:${IMAGE_TAG} ./backend"
-                
-                echo "=== Building Frontend Docker Image ==="
-                bat "docker build -t ${FRONTEND_IMAGE}:${IMAGE_TAG} ./frontend"
+                echo '=== Building Docker Images ==='
+                bat '''
+                docker build -t %BACKEND_IMAGE%:%IMAGE_TAG% ./backend
+                docker build -t %FRONTEND_IMAGE%:%IMAGE_TAG% ./frontend
+                '''
             }
         }
 
         stage('Push Docker Images (Optional)') {
             steps {
-                echo "=== Pushing Docker Images to Registry ==="
-                // Si tu as un registry, décommente et configure
-                // bat "docker tag ${BACKEND_IMAGE}:${IMAGE_TAG} ${DOCKER_REG}/${BACKEND_IMAGE}:${IMAGE_TAG}"
-                // bat "docker push ${DOCKER_REG}/${BACKEND_IMAGE}:${IMAGE_TAG}"
-                // bat "docker tag ${FRONTEND_IMAGE}:${IMAGE_TAG} ${DOCKER_REG}/${FRONTEND_IMAGE}:${IMAGE_TAG}"
-                // bat "docker push ${DOCKER_REG}/${FRONTEND_IMAGE}:${IMAGE_TAG}"
-                echo "Push skipped (configure DOCKER_REG pour activer)"
+                echo '=== Pushing Docker Images ==='
+                bat '''
+                REM docker push %BACKEND_IMAGE%:%IMAGE_TAG%
+                REM docker push %FRONTEND_IMAGE%:%IMAGE_TAG%
+                '''
             }
         }
 
         stage('Deploy to Kubernetes') {
             steps {
-                echo "=== Deploying to Kubernetes ==="
-                bat """
-                kubectl apply -f ./k8s/backend-deployment.yaml
-                kubectl apply -f ./k8s/frontend-deployment.yaml
+                echo '=== Deploying to Kubernetes ==='
+                bat '''
+                kubectl apply -f k8s/backend-deployment.yaml
+                kubectl apply -f k8s/frontend-deployment.yaml
                 kubectl get pods
-                """
+                '''
             }
         }
 
         stage('Cleanup') {
             steps {
-                echo "=== Optional cleanup ==="
-                // bat "kind delete cluster --name ${CLUSTER_NAME}"
+                echo '=== Cleanup ==='
+                bat '''
+                REM Optionnel : supprimer cluster Kind
+                REM kind delete cluster --name k8s-terraform
+                '''
             }
         }
     }
 
     post {
-        always {
-            echo "Pipeline finished. Status: ${currentBuild.currentResult}"
+        success {
+            echo 'Pipeline finished successfully.'
         }
         failure {
-            echo "Pipeline failed. Check logs."
-        }
-        success {
-            echo "Pipeline succeeded!"
+            echo 'Pipeline failed. Check logs.'
         }
     }
 }
