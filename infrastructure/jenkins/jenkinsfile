@@ -2,21 +2,15 @@ pipeline {
     agent any
 
     environment {
-        PATH = "C:\\Program Files\\Docker\\Docker\\resources\\bin;C:\\ProgramData\\chocolatey\\bin;C:\\Windows\\System32;C:\\Windows;C:\\Windows\\System32\\WindowsPowerShell\\v1.0;C:\\Program Files\\Python313;C:\\Program Files\\Python313\\Scripts"
-        BACKEND_IMAGE = "transport-backend"
-        FRONTEND_IMAGE = "transport-frontend"
-        IMAGE_TAG = "${BUILD_NUMBER}"
         CLUSTER_NAME = "k8s-terraform"
         KUBECONFIG = "${WORKSPACE}\\.kube\\config"
     }
 
     stages {
 
-        stage('Checkout SCM') {
+        stage('Declarative: Checkout SCM') {
             steps {
-                checkout([$class: 'GitSCM', 
-                          branches: [[name: '*/main']], 
-                          userRemoteConfigs: [[url: 'https://github.com/zineb-chgari/traffic_optimizer.git']]])
+                checkout scm
             }
         }
 
@@ -35,28 +29,22 @@ pipeline {
 
         stage('Validate Terraform') {
             steps {
-                dir('infrastructure\\Terraform') {
-                    bat '''
-                    terraform init -input=false
-                    terraform validate
-                    '''
+                dir('infrastructure/Terraform') {
+                    bat 'terraform init -input=false'
+                    bat 'terraform validate'
                 }
             }
         }
 
         stage('Build Backend Image') {
             steps {
-                bat '''
-                docker build -f backend\\Dockerfile -t %BACKEND_IMAGE%:latest -t %BACKEND_IMAGE%:%IMAGE_TAG% backend
-                '''
+                bat 'docker build -f backend/Dockerfile -t transport-backend:latest backend'
             }
         }
 
         stage('Build Frontend Image') {
             steps {
-                bat '''
-                docker build -f frontend\\Dockerfile -t %FRONTEND_IMAGE%:latest -t %FRONTEND_IMAGE%:%IMAGE_TAG% frontend
-                '''
+                bat 'docker build -f frontend/Dockerfile -t transport-frontend:latest frontend'
             }
         }
 
@@ -80,43 +68,8 @@ pipeline {
                     )
                     echo [SUCCESS] Cluster created
                 ) else (
-                    echo [INFO] Cluster exists, verifying health...
-                    kubectl cluster-info --context kind-%CLUSTER_NAME% >nul 2>&1
-                    if errorlevel 1 (
-                        echo [WARNING] Cluster exists but unhealthy, recreating...
-                        kind delete cluster --name %CLUSTER_NAME%
-                        kind create cluster --name %CLUSTER_NAME% --wait 120s
-                        echo [SUCCESS] Cluster recreated
-                    ) else (
-                        echo [SUCCESS] Cluster is healthy
-                    )
+                    echo [INFO] Cluster exists, reusing it
                 )
-                echo ========================================
-                '''
-            }
-        }
-
-        stage('Verify Cluster Connection') {
-            steps {
-                bat '''
-                @echo off
-                echo ========================================
-                echo Verifying Kubernetes cluster connection...
-                echo ========================================
-                
-                set KUBECONFIG=%WORKSPACE%\\.kube\\config
-
-                echo Current context:
-                kubectl config current-context
-
-                echo Kubernetes API endpoint:
-                kubectl config view --minify -o jsonpath="{.clusters[0].cluster.server}"
-
-                echo Waiting for nodes to be ready...
-                kubectl wait --for=condition=Ready nodes --all --timeout=180s
-
-                echo Current nodes status:
-                kubectl get nodes
                 echo ========================================
                 '''
             }
@@ -125,43 +78,17 @@ pipeline {
         stage('Load Images to Kind') {
             steps {
                 bat '''
-                echo ========================================
-                echo Loading images to Kind cluster...
-                echo ========================================
-                kind load docker-image %BACKEND_IMAGE%:latest --name %CLUSTER_NAME%
-                kind load docker-image %FRONTEND_IMAGE%:latest --name %CLUSTER_NAME%
-                echo ========================================
-                echo Images loaded successfully
-                echo ========================================
+                kind load docker-image transport-backend:latest --name %CLUSTER_NAME%
+                kind load docker-image transport-frontend:latest --name %CLUSTER_NAME%
+                kind load docker-image redis:7-alpine --name %CLUSTER_NAME%
                 '''
             }
         }
 
         stage('Deploy with Terraform') {
             steps {
-                dir('infrastructure\\Terraform') {
-                    bat '''
-                    @echo off
-                    echo ========================================
-                    echo Deploying with Terraform...
-                    echo ========================================
-
-                    REM Assurer que Terraform utilise le kubeconfig du workspace Jenkins
-                    set KUBECONFIG=%WORKSPACE%\\.kube\\config
-
-                    echo Current kubectl context:
-                    kubectl config current-context
-
-                    echo Kubernetes API endpoint:
-                    kubectl config view --minify -o jsonpath="{.clusters[0].cluster.server}"
-                    echo.
-
-                    terraform apply -auto-approve
-
-                    echo ========================================
-                    echo Terraform deployment completed
-                    echo ========================================
-                    '''
+                dir('infrastructure/Terraform') {
+                    bat 'terraform apply -auto-approve'
                 }
             }
         }
@@ -169,27 +96,11 @@ pipeline {
         stage('Wait for Pods') {
             steps {
                 bat '''
-                @echo off
-                echo ========================================
+                set KUBECONFIG=%KUBECONFIG%
                 echo Waiting for pods to be ready...
-                echo ========================================
-                
-                set KUBECONFIG=%WORKSPACE%\\.kube\\config
-
-                timeout /t 10 /nobreak >nul
-
-                echo Waiting for Redis pods...
-                kubectl wait --for=condition=Ready pod -l app=redis --timeout=300s || echo Redis pods not ready yet
-
-                echo Waiting for Backend pods...
-                kubectl wait --for=condition=Ready pod -l app=backend --timeout=300s || echo Backend pods not ready yet
-
-                echo Waiting for Frontend pods...
-                kubectl wait --for=condition=Ready pod -l app=frontend --timeout=300s || echo Frontend pods not ready yet
-
-                echo ========================================
-                echo Pod readiness check completed
-                echo ========================================
+                kubectl wait --for=condition=Ready pod -l app=backend --timeout=120s
+                kubectl wait --for=condition=Ready pod -l app=frontend --timeout=120s
+                kubectl wait --for=condition=Ready pod -l app=redis --timeout=120s
                 '''
             }
         }
@@ -197,41 +108,13 @@ pipeline {
         stage('Verify Deployment') {
             steps {
                 bat '''
-                @echo off
-                echo ========================================
-                echo Deployment Verification
-                echo ========================================
-
-                set KUBECONFIG=%WORKSPACE%\\.kube\\config
-
-                echo --- All Pods Status ---
-                kubectl get pods -A
-
-                echo --- Services Status ---
-                kubectl get svc -A
-
-                echo --- Nodes Status ---
-                kubectl get nodes
-
-                echo --- Backend Pod Details ---
-                kubectl describe pods -l app=backend || echo No backend pods found
-
-                echo --- Frontend Pod Details ---
-                kubectl describe pods -l app=frontend || echo No frontend pods found
-
-                echo --- Redis Pod Details ---
-                kubectl describe pods -l app=redis || echo No redis pods found
-
-                echo --- Backend Logs (last 20 lines) ---
-                kubectl logs -l app=backend --tail=20 --all-containers=true || echo No backend logs available
-
-                echo --- Frontend Logs (last 20 lines) ---
-                kubectl logs -l app=frontend --tail=20 --all-containers=true || echo No frontend logs available
-
-                echo --- Redis Logs (last 20 lines) ---
-                kubectl logs -l app=redis --tail=20 --all-containers=true || echo No redis logs available
-
-                echo ========================================
+                set KUBECONFIG=%KUBECONFIG%
+                echo === BACKEND PODS ===
+                kubectl get pods -l app=backend
+                echo === FRONTEND PODS ===
+                kubectl get pods -l app=frontend
+                echo === REDIS PODS ===
+                kubectl get pods -l app=redis
                 '''
             }
         }
@@ -239,55 +122,22 @@ pipeline {
 
     post {
         always {
-            echo "Pipeline execution completed"
-            bat "docker system prune -f || exit 0"
-        }
-        success {
-            echo "=========================================="
-            echo "✓ Pipeline completed successfully!"
-            echo "=========================================="
-            echo "Access your application:"
-            echo "  Frontend: http://localhost:30001"
-            echo "  Backend:  http://localhost:30002"
-            echo "Useful commands:"
-            echo "  kubectl get pods"
-            echo "  kubectl get svc"
-            echo "  kubectl logs -l app=backend"
-            echo "  kubectl logs -l app=frontend"
-            echo "Cluster %CLUSTER_NAME% is ready and will be reused in next builds"
-        }
-        failure {
-            echo "=========================================="
-            echo "✗ Pipeline failed"
-            echo "=========================================="
+            bat 'docker system prune -f || exit 0'
             bat '''
-            @echo off
-            set KUBECONFIG=%WORKSPACE%\\.kube\\config
-
+            set KUBECONFIG=%KUBECONFIG%
             echo Current Context:
-            kubectl config current-context || echo Cannot get context
-
+            kubectl config current-context
             echo Cluster Info:
-            kubectl cluster-info || echo Cannot get cluster info
-
-            echo All Pods in all namespaces:
-            kubectl get pods -A || echo Cannot get pods
-
-            echo Default namespace pods details:
-            kubectl get pods -o wide || echo Cannot get pods details
-
-            echo Backend pod description:
-            kubectl describe pods -l app=backend || echo Cannot describe backend pods
-
-            echo Frontend pod description:
-            kubectl describe pods -l app=frontend || echo Cannot describe frontend pods
-
-            echo Redis pod description:
-            kubectl describe pods -l app=redis || echo Cannot describe redis pods
-
-            echo Events:
-            kubectl get events --sort-by=.metadata.creationTimestamp || echo Cannot get events
+            kubectl cluster-info
             '''
+        }
+
+        success {
+            echo "Pipeline succeeded ✅"
+        }
+
+        failure {
+            echo "Pipeline failed ❌"
         }
     }
 }
