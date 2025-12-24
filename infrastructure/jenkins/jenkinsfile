@@ -23,47 +23,47 @@ pipeline {
 
         stage('Environment Check') {
             steps {
-                bat """
+                bat '''
                 echo === PATH CHECK ===
                 echo %PATH%
                 docker --version || echo Docker not found
                 kubectl version --client || echo kubectl not found
                 terraform version || echo Terraform not found
                 kind version || echo Kind not found
-                """
+                '''
             }
         }
 
         stage('Validate Terraform') {
             steps {
                 dir('infrastructure\\Terraform') {
-                    bat """
+                    bat '''
                     terraform init -input=false
                     terraform validate
-                    """
+                    '''
                 }
             }
         }
 
         stage('Build Backend Image') {
             steps {
-                bat """
+                bat '''
                 docker build -f backend\\Dockerfile -t %BACKEND_IMAGE%:latest -t %BACKEND_IMAGE%:%IMAGE_TAG% backend
-                """
+                '''
             }
         }
 
         stage('Build Frontend Image') {
             steps {
-                bat """
+                bat '''
                 docker build -f frontend\\Dockerfile -t %FRONTEND_IMAGE%:latest -t %FRONTEND_IMAGE%:%IMAGE_TAG% frontend
-                """
+                '''
             }
         }
 
         stage('Create or Reuse Kind Cluster') {
             steps {
-                bat """
+                bat '''
                 kind get clusters | findstr /R /C:"^%CLUSTER_NAME%$" 
                 if errorlevel 1 (
                     echo Cluster %CLUSTER_NAME% does not exist. Creating...
@@ -71,43 +71,43 @@ pipeline {
                 ) else (
                     echo Cluster %CLUSTER_NAME% already exists. Reusing it
                 )
-                """
+                '''
             }
         }
 
         stage('Load Images to Kind') {
             steps {
-                bat """
+                bat '''
                 kind load docker-image %BACKEND_IMAGE%:%IMAGE_TAG% --name %CLUSTER_NAME%
                 kind load docker-image %FRONTEND_IMAGE%:%IMAGE_TAG% --name %CLUSTER_NAME%
-                """
+                '''
             }
         }
 
         stage('Deploy with Terraform') {
             steps {
                 dir('infrastructure\\Terraform') {
-                    bat """
+                    bat '''
                     terraform apply -auto-approve
-                    """
+                    '''
                 }
             }
         }
 
         stage('Wait for Pods') {
             steps {
-                bat """
+                bat '''
                 kubectl wait --for=condition=Ready pods --all --namespace default --timeout=120s
-                """
+                '''
             }
         }
 
         stage('Verify Deployment') {
             steps {
-                bat """
+                bat '''
                 kubectl get pods -A
                 kubectl get svc -A
-                """
+                '''
             }
         }
     }
