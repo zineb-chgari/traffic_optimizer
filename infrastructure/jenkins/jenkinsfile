@@ -2,102 +2,249 @@ pipeline {
     agent any
 
     environment {
-        // Mettre ici les chemins exacts des exécutables sur ton système
-        PATH = "C:\\Program Files\\Docker\\Docker\\resources\\bin;C:\\Program Files\\Terraform;C:\\Users\\TonUser\\kubectl;C:\\Users\\TonUser\\kind;%PATH%"
+        PATH = "C:\\Program Files\\Docker\\Docker\\resources\\bin;C:\\ProgramData\\chocolatey\\bin;C:\\Windows\\System32;C:\\Windows;C:\\Windows\\System32\\WindowsPowerShell\\v1.0;C:\\Program Files\\Python313;C:\\Program Files\\Python313\\Scripts"
+        BACKEND_IMAGE = "transport-backend"
+        FRONTEND_IMAGE = "transport-frontend"
+        IMAGE_TAG = "${BUILD_NUMBER}"
+        CLUSTER_NAME = "k8s-terraform"
+        KUBECONFIG = "${WORKSPACE}\\.kube\\config"
     }
 
     stages {
 
-        stage('Verify Tools') {
+        stage('Checkout SCM') {
             steps {
-                bat 'echo === Verifying tools ==='
-                bat 'docker --version || echo Docker not found'
-                bat 'kubectl version --client || echo kubectl not found'
-                bat 'terraform version || echo Terraform not found'
-                bat 'kind version || echo Kind not found'
+                checkout([$class: 'GitSCM', 
+                          branches: [[name: '*/main']], 
+                          userRemoteConfigs: [[url: 'https://github.com/zineb-chgari/traffic_optimizer.git']]])
             }
         }
 
-        stage('Checkout SCM') {
+        stage('Environment Check') {
             steps {
-                checkout scm
+                bat '''
+                echo === PATH CHECK ===
+                echo %PATH%
+                docker --version || echo Docker not found
+                kubectl version --client || echo kubectl not found
+                terraform version || echo Terraform not found
+                kind version || echo Kind not found
+                '''
             }
         }
 
         stage('Validate Terraform') {
             steps {
-                dir('infrastructure/Terraform') {
-                    bat 'terraform init -input=false'
-                    bat 'terraform validate'
+                dir('infrastructure\\Terraform') {
+                    bat '''
+                    terraform init -input=false
+                    terraform validate
+                    '''
                 }
             }
         }
 
         stage('Build Backend Image') {
             steps {
-                bat 'docker build -f backend/Dockerfile -t transport-backend:latest -t transport-backend:7 backend'
+                bat '''
+                docker build -f backend\\Dockerfile -t %BACKEND_IMAGE%:latest -t %BACKEND_IMAGE%:%IMAGE_TAG% backend
+                '''
             }
         }
 
         stage('Build Frontend Image') {
             steps {
-                bat 'docker build -f frontend/Dockerfile -t transport-frontend:latest -t transport-frontend:7 frontend'
+                bat '''
+                docker build -f frontend\\Dockerfile -t %FRONTEND_IMAGE%:latest -t %FRONTEND_IMAGE%:%IMAGE_TAG% frontend
+                '''
             }
         }
 
         stage('Setup Kind Cluster') {
             steps {
-                bat """
-                    echo Setting up Kind cluster...
-                    kind delete cluster --name k8s-terraform-7 || echo Cluster not found
-                    kind create cluster --name k8s-terraform-7
-                """
+                bat '''
+                @echo off
+                echo ========================================
+                echo Checking Kind cluster status...
+                echo ========================================
+                
+                kind get clusters 2>nul | findstr /R /C:"^%CLUSTER_NAME%$" >nul 2>&1
+                if errorlevel 1 (
+                    echo [INFO] Cluster not found, creating new cluster...
+                    kind create cluster --name %CLUSTER_NAME% --wait 120s
+                ) else (
+                    echo [INFO] Cluster exists, verifying health...
+                    kubectl cluster-info --context kind-%CLUSTER_NAME% >nul 2>&1
+                    if errorlevel 1 (
+                        echo [WARNING] Cluster unhealthy, recreating...
+                        kind delete cluster --name %CLUSTER_NAME%
+                        kind create cluster --name %CLUSTER_NAME% --wait 120s
+                    ) else (
+                        echo [SUCCESS] Cluster is healthy
+                    )
+                )
+                echo ========================================
+                echo Cluster setup completed
+                echo ========================================
+                '''
+            }
+        }
+
+        stage('Verify Cluster Connection') {
+            steps {
+                bat '''
+                @echo off
+                echo ========================================
+                echo Verifying Kubernetes cluster connection...
+                echo ========================================
+                
+                timeout /t 15 /nobreak >nul
+                kubectl config use-context kind-%CLUSTER_NAME%
+                kubectl cluster-info
+                kubectl wait --for=condition=Ready nodes --all --timeout=180s
+                kubectl get nodes
+                kubectl get pods -n kube-system
+                echo ========================================
+                echo Cluster is ready
+                echo ========================================
+                '''
             }
         }
 
         stage('Load Images to Kind') {
             steps {
-                bat 'kind load docker-image transport-backend:latest --name k8s-terraform-7'
-                bat 'kind load docker-image transport-frontend:latest --name k8s-terraform-7'
+                bat '''
+                echo ========================================
+                echo Loading images to Kind cluster...
+                echo ========================================
+                kind load docker-image %BACKEND_IMAGE%:latest --name %CLUSTER_NAME%
+                kind load docker-image %FRONTEND_IMAGE%:latest --name %CLUSTER_NAME%
+                echo ========================================
+                echo Images loaded successfully
+                echo ========================================
+                '''
             }
         }
 
         stage('Deploy with Terraform') {
             steps {
-                dir('infrastructure/Terraform') {
-                    bat 'kubectl config use-context kind-k8s-terraform-7'
-                    bat 'terraform apply -auto-approve'
+                dir('infrastructure\\Terraform') {
+                    bat '''
+                    @echo off
+                    echo ========================================
+                    echo Deploying with Terraform...
+                    echo ========================================
+                    
+                    kubectl config use-context kind-%CLUSTER_NAME%
+                    echo Current context: 
+                    kubectl config current-context
+                    terraform apply -auto-approve
+                    echo ========================================
+                    echo Terraform deployment completed
+                    echo ========================================
+                    '''
                 }
             }
         }
 
         stage('Wait for Pods') {
             steps {
-                // On attend que tous les pods soient prêts, mais on ne plante pas si aucun pod n'est trouvé
-                bat 'kubectl wait --for=condition=Ready pod -l app=redis --timeout=300s || echo Redis pods not ready yet'
-                bat 'kubectl wait --for=condition=Ready pod -l app=backend --timeout=300s || echo Backend pods not ready yet'
-                bat 'kubectl wait --for=condition=Ready pod -l app=frontend --timeout=300s || echo Frontend pods not ready yet'
+                bat '''
+                @echo off
+                echo ========================================
+                echo Waiting for pods to be ready...
+                echo ========================================
+
+                set MAX_RETRIES=30
+                set SLEEP_TIME=10
+
+                for %%L in (redis backend frontend) do (
+                    echo Waiting for %%L pods...
+                    set /a COUNTER=0
+                    :WAIT_LOOP_%%L
+                    kubectl get pods -l app=%%L -o jsonpath="{.items[?(@.status.phase!='Running')].metadata.name}" > temp.txt
+                    set /p NOT_READY=<temp.txt
+                    del temp.txt
+                    if defined NOT_READY (
+                        echo %%L pods not ready: !NOT_READY!
+                        set /a COUNTER+=1
+                        if !COUNTER! lss %MAX_RETRIES% (
+                            timeout /t %SLEEP_TIME% >nul
+                            goto WAIT_LOOP_%%L
+                        ) else (
+                            echo WARNING: Some %%L pods never became ready
+                        )
+                    ) else (
+                        echo %%L pods are ready
+                    )
+                )
+                echo ========================================
+                echo Pod readiness check completed
+                echo ========================================
+                '''
             }
         }
 
         stage('Verify Deployment') {
             steps {
-                bat 'kubectl get pods'
-                bat 'kubectl get svc'
+                bat '''
+                @echo off
+                echo ========================================
+                echo Deployment Verification
+                echo ========================================
+
+                kubectl get pods -A
+                kubectl get svc -A
+                kubectl get nodes
+                kubectl get deployments
+
+                for %%L in (backend frontend redis) do (
+                    echo.
+                    echo --- %%L Logs (last 20 lines) ---
+                    kubectl logs -l app=%%L --tail=20 --all-containers=true || echo No %%L logs available
+                )
+                echo ========================================
+                '''
             }
         }
     }
 
     post {
         always {
-            echo 'Cleaning up Docker cache...'
-            bat 'docker system prune -f || exit 0'
+            echo "Pipeline execution completed"
+            bat "docker system prune -f || exit 0"
         }
         success {
-            echo 'Pipeline completed successfully!'
+            echo "=========================================="
+            echo "✓ Pipeline completed successfully!"
+            echo "=========================================="
+            echo "Frontend: http://localhost:30001"
+            echo "Backend:  http://localhost:30002"
+            echo "Cluster %CLUSTER_NAME% ready for reuse"
         }
         failure {
-            echo 'Pipeline failed. Check logs above for errors.'
+            echo "=========================================="
+            echo "✗ Pipeline failed"
+            echo "=========================================="
+            bat '''
+            echo Current Context:
+            kubectl config current-context || echo Cannot get context
+            echo Cluster Info:
+            kubectl cluster-info || echo Cannot get cluster info
+            echo All Pods in all namespaces:
+            kubectl get pods -A || echo Cannot get pods
+            echo Default namespace pods details:
+            kubectl get pods -o wide || echo Cannot get pods details
+            echo Backend pod description:
+            kubectl describe pods -l app=backend || echo Cannot describe backend pods
+            echo Frontend pod description:
+            kubectl describe pods -l app=frontend || echo Cannot describe frontend pods
+            echo Redis pod description:
+            kubectl describe pods -l app=redis || echo Cannot describe redis pods
+            echo Events:
+            kubectl get events --sort-by=.metadata.creationTimestamp || echo Cannot get events
+            '''
+            echo "To clean up and retry: kind delete cluster --name %CLUSTER_NAME%"
         }
     }
 }
