@@ -2,7 +2,6 @@ pipeline {
     agent any
 
     environment {
-        // PATH complet pour que Jenkins trouve tous les binaires
         PATH = "C:\\Program Files\\Docker\\Docker\\resources\\bin;C:\\ProgramData\\chocolatey\\bin;C:\\Windows\\System32;C:\\Windows;C:\\Windows\\System32\\WindowsPowerShell\\v1.0;C:\\Program Files\\Python313;C:\\Program Files\\Python313\\Scripts"
         BACKEND_IMAGE = "transport-backend"
         FRONTEND_IMAGE = "transport-frontend"
@@ -61,25 +60,79 @@ pipeline {
             }
         }
 
-        stage('Create or Reuse Kind Cluster') {
+        stage('Setup Kind Cluster') {
             steps {
-                bat '''
-                kind get clusters | findstr /R /C:"^%CLUSTER_NAME%$" 
-                if errorlevel 1 (
-                    echo Cluster %CLUSTER_NAME% does not exist. Creating...
-                    kind create cluster --name %CLUSTER_NAME% --wait 60s
-                ) else (
-                    echo Cluster %CLUSTER_NAME% already exists. Reusing it
-                )
-                '''
+                script {
+                    bat '''
+                    @echo off
+                    echo ========================================
+                    echo Checking Kind cluster status...
+                    echo ========================================
+                    
+                    REM Vérifier si le cluster est listé par Kind
+                    kind get clusters 2>nul | findstr /R /C:"^%CLUSTER_NAME%$" >nul 2>&1
+                    
+                    if errorlevel 1 (
+                        echo [INFO] Cluster not found in Kind registry
+                        
+                        REM Vérifier si des conteneurs Docker existent
+                        docker ps -a --filter "label=io.x-k8s.kind.cluster=%CLUSTER_NAME%" --format "{{.ID}}" > temp_check.txt
+                        set /p CONTAINER_ID=<temp_check.txt
+                        del temp_check.txt
+                        
+                        if defined CONTAINER_ID (
+                            echo [WARNING] Found orphaned Docker containers for cluster %CLUSTER_NAME%
+                            echo [ACTION] Cleaning up orphaned containers...
+                            
+                            for /f "tokens=*" %%i in ('docker ps -a --filter "label=io.x-k8s.kind.cluster=%CLUSTER_NAME%" --format "{{.ID}}"') do (
+                                echo Removing container: %%i
+                                docker rm -f %%i
+                            )
+                            echo [SUCCESS] Cleanup completed
+                        )
+                        
+                        echo [ACTION] Creating new Kind cluster: %CLUSTER_NAME%
+                        kind create cluster --name %CLUSTER_NAME% --wait 60s
+                        
+                        if errorlevel 1 (
+                            echo [ERROR] Failed to create cluster
+                            exit /b 1
+                        )
+                        echo [SUCCESS] Cluster created successfully
+                        
+                    ) else (
+                        echo [INFO] Cluster %CLUSTER_NAME% found in Kind registry
+                        
+                        REM Vérifier que le cluster est fonctionnel
+                        kubectl cluster-info --context kind-%CLUSTER_NAME% >nul 2>&1
+                        
+                        if errorlevel 1 (
+                            echo [WARNING] Cluster exists but is not healthy
+                            echo [ACTION] Deleting and recreating cluster...
+                            kind delete cluster --name %CLUSTER_NAME%
+                            kind create cluster --name %CLUSTER_NAME% --wait 60s
+                            echo [SUCCESS] Cluster recreated successfully
+                        ) else (
+                            echo [SUCCESS] Cluster is healthy and ready to use
+                            echo [INFO] Reusing existing cluster
+                        )
+                    )
+                    
+                    echo ========================================
+                    echo Cluster setup completed
+                    echo ========================================
+                    '''
+                }
             }
         }
 
         stage('Load Images to Kind') {
             steps {
                 bat '''
+                echo Loading images to Kind cluster...
                 kind load docker-image %BACKEND_IMAGE%:%IMAGE_TAG% --name %CLUSTER_NAME%
                 kind load docker-image %FRONTEND_IMAGE%:%IMAGE_TAG% --name %CLUSTER_NAME%
+                echo Images loaded successfully
                 '''
             }
         }
@@ -105,8 +158,19 @@ pipeline {
         stage('Verify Deployment') {
             steps {
                 bat '''
+                echo ========================================
+                echo Deployment Verification
+                echo ========================================
+                echo.
+                echo Pods Status:
                 kubectl get pods -A
+                echo.
+                echo Services Status:
                 kubectl get svc -A
+                echo.
+                echo Nodes Status:
+                kubectl get nodes
+                echo ========================================
                 '''
             }
         }
@@ -114,8 +178,16 @@ pipeline {
 
     post {
         always {
-            echo "Cleaning up..."
+            echo "Pipeline execution completed"
             bat "docker system prune -f || exit 0"
+        }
+        success {
+            echo "✓ Pipeline completed successfully!"
+            echo "Cluster %CLUSTER_NAME% is ready and will be reused in next builds"
+        }
+        failure {
+            echo "✗ Pipeline failed"
+            echo "Consider running: kind delete cluster --name %CLUSTER_NAME%"
         }
     }
 }
