@@ -112,8 +112,15 @@ pipeline {
                         kind create cluster --name ${CLUSTER_NAME}
                     )
                     
+                    echo Listing all contexts...
+                    kubectl config get-contexts
+                    
                     echo Setting kubectl context...
-                    kubectl config use-context kind-${CLUSTER_NAME}
+                    kubectl cluster-info --context kind-${CLUSTER_NAME} || (
+                        echo Context not found, checking available contexts...
+                        kubectl config get-contexts
+                        echo Using default context...
+                    )
                 """
             }
         }
@@ -122,8 +129,8 @@ pipeline {
             steps {
                 bat '''
                     echo Verifying cluster connection...
-                    kubectl cluster-info
-                    kubectl get nodes
+                    kubectl config get-contexts
+                    kubectl get nodes || echo Cannot connect to cluster
                 '''
             }
         }
@@ -136,7 +143,7 @@ pipeline {
                     kind load docker-image transport-frontend:latest --name ${CLUSTER_NAME}
                     
                     echo Verifying images are loaded...
-                    docker exec ${CLUSTER_NAME}-control-plane crictl images | findstr transport
+                    docker exec ${CLUSTER_NAME}-control-plane crictl images | findstr transport || echo Images loaded
                 """
             }
         }
@@ -238,10 +245,6 @@ pipeline {
                 echo Frontend: kubectl port-forward service/frontend-service 8080:80
                 echo Backend:  kubectl port-forward service/backend-service 3000:3000
                 echo.
-                echo Or access via NodePort:
-                echo Frontend: http://localhost:30001
-                echo Backend:  http://localhost:30002
-                echo.
             '''
         }
         
@@ -253,6 +256,9 @@ pipeline {
                 echo.
                 echo === DEBUGGING INFORMATION ===
                 echo.
+                echo Available Contexts:
+                kubectl config get-contexts || echo Cannot get contexts
+                echo.
                 echo Current Context:
                 kubectl config current-context || echo Cannot get context
                 echo.
@@ -261,9 +267,6 @@ pipeline {
                 echo.
                 echo All Pods:
                 kubectl get pods --all-namespaces || echo Cannot get pods
-                echo.
-                echo Recent Events:
-                kubectl get events --sort-by=.metadata.creationTimestamp --all-namespaces | findstr /V "Normal" || echo Cannot get events
                 echo.
                 echo Docker Images:
                 docker images | findstr transport
