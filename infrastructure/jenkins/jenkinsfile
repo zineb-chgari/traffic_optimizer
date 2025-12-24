@@ -83,28 +83,49 @@ pipeline {
                 script {
                     echo '=== Setting up Kind Cluster ==='
                     
-                    // Vérifier si le cluster existe
-                    def clusterExists = bat(
-                        script: "kind get clusters | findstr /R /C:\"^${CLUSTER_NAME}\$\"",
+                    // Méthode plus fiable : vérifier directement avec kubectl
+                    def clusterHealthy = bat(
+                        script: "kubectl cluster-info --context kind-${CLUSTER_NAME} 2>nul",
                         returnStatus: true
                     ) == 0
                     
-                    if (clusterExists) {
-                        echo "Cluster ${CLUSTER_NAME} found, checking health..."
-                        
-                        def clusterHealthy = bat(
-                            script: "kubectl cluster-info --context kind-${CLUSTER_NAME}",
-                            returnStatus: true
-                        ) == 0
-                        
-                        if (clusterHealthy) {
-                            echo "✓ Reusing existing healthy cluster"
-                            return
-                        } else {
-                            echo "Cluster is unhealthy, recreating..."
-                            bat "kind delete cluster --name ${CLUSTER_NAME}"
-                        }
+                    if (clusterHealthy) {
+                        echo "✓ Cluster ${CLUSTER_NAME} is healthy, reusing it"
+                        bat "kubectl config use-context kind-${CLUSTER_NAME}"
+                        return
                     }
+                    
+                    // Si le cluster n'est pas sain, vérifier s'il existe quand même
+                    echo "Cluster not healthy or not found, checking for remnants..."
+                    
+                    def clusterListed = bat(
+                        script: """
+                            @echo off
+                            kind get clusters > clusters.tmp 2>nul
+                            findstr /X "${CLUSTER_NAME}" clusters.tmp >nul 2>&1
+                            set RESULT=%ERRORLEVEL%
+                            del clusters.tmp 2>nul
+                            exit /b %RESULT%
+                        """,
+                        returnStatus: true
+                    ) == 0
+                    
+                    if (clusterListed) {
+                        echo "Cluster exists but is unhealthy, deleting..."
+                        bat "kind delete cluster --name ${CLUSTER_NAME}"
+                        // Attendre un peu pour s'assurer de la suppression complète
+                        bat "timeout /t 5 /nobreak >nul"
+                    }
+                    
+                    // Nettoyer les conteneurs orphelins Docker
+                    echo "Cleaning any orphaned Docker containers..."
+                    bat """
+                        @echo off
+                        for /f "tokens=*" %%i in ('docker ps -aq --filter "label=io.x-k8s.kind.cluster=${CLUSTER_NAME}" 2^>nul') do (
+                            echo Removing orphaned container: %%i
+                            docker rm -f %%i 2>nul
+                        )
+                    """
                     
                     // Créer le cluster
                     echo "Creating new Kind cluster..."
