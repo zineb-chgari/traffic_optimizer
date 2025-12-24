@@ -62,31 +62,67 @@ pipeline {
 
         stage('Setup Kind Cluster') {
             steps {
-                bat '''
-                @echo off
-                echo ========================================
-                echo Checking Kind cluster status...
-                echo ========================================
-                
-                kind get clusters 2>nul | findstr /R /C:"^%CLUSTER_NAME%$" >nul 2>&1
-                if errorlevel 1 (
-                    echo [INFO] Cluster not found, creating new cluster...
-                    kind create cluster --name %CLUSTER_NAME% --wait 120s
-                ) else (
-                    echo [INFO] Cluster exists, verifying health...
-                    kubectl cluster-info --context kind-%CLUSTER_NAME% >nul 2>&1
+                script {
+                    bat '''
+                    @echo off
+                    echo ========================================
+                    echo Checking Kind cluster status...
+                    echo ========================================
+                    
+                    REM Vérifier si le cluster est listé par Kind
+                    kind get clusters 2>nul | findstr /R /C:"^%CLUSTER_NAME%$" >nul 2>&1
+                    
                     if errorlevel 1 (
-                        echo [WARNING] Cluster unhealthy, recreating...
-                        kind delete cluster --name %CLUSTER_NAME%
+                        echo [INFO] Cluster not found in Kind registry
+                        
+                        REM Vérifier si des conteneurs Docker existent
+                        docker ps -a --filter "label=io.x-k8s.kind.cluster=%CLUSTER_NAME%" --format "{{.ID}}" > temp_check.txt
+                        set /p CONTAINER_ID=<temp_check.txt
+                        del temp_check.txt
+                        
+                        if defined CONTAINER_ID (
+                            echo [WARNING] Found orphaned Docker containers for cluster %CLUSTER_NAME%
+                            echo [ACTION] Cleaning up orphaned containers...
+                            
+                            for /f "tokens=*" %%i in ('docker ps -a --filter "label=io.x-k8s.kind.cluster=%CLUSTER_NAME%" --format "{{.ID}}"') do (
+                                echo Removing container: %%i
+                                docker rm -f %%i
+                            )
+                            echo [SUCCESS] Cleanup completed
+                        )
+                        
+                        echo [ACTION] Creating new Kind cluster: %CLUSTER_NAME%
                         kind create cluster --name %CLUSTER_NAME% --wait 120s
+                        
+                        if errorlevel 1 (
+                            echo [ERROR] Failed to create cluster
+                            exit /b 1
+                        )
+                        echo [SUCCESS] Cluster created successfully
+                        
                     ) else (
-                        echo [SUCCESS] Cluster is healthy
+                        echo [INFO] Cluster %CLUSTER_NAME% found in Kind registry
+                        
+                        REM Vérifier que le cluster est fonctionnel
+                        kubectl cluster-info --context kind-%CLUSTER_NAME% >nul 2>&1
+                        
+                        if errorlevel 1 (
+                            echo [WARNING] Cluster exists but is not healthy
+                            echo [ACTION] Deleting and recreating cluster...
+                            kind delete cluster --name %CLUSTER_NAME%
+                            kind create cluster --name %CLUSTER_NAME% --wait 120s
+                            echo [SUCCESS] Cluster recreated successfully
+                        ) else (
+                            echo [SUCCESS] Cluster is healthy and ready to use
+                            echo [INFO] Reusing existing cluster
+                        )
                     )
-                )
-                echo ========================================
-                echo Cluster setup completed
-                echo ========================================
-                '''
+                    
+                    echo ========================================
+                    echo Cluster setup completed
+                    echo ========================================
+                    '''
+                }
             }
         }
 
@@ -98,14 +134,39 @@ pipeline {
                 echo Verifying Kubernetes cluster connection...
                 echo ========================================
                 
+                REM Attendre que le cluster soit complètement prêt
+                echo Waiting for cluster to stabilize...
                 timeout /t 15 /nobreak >nul
+                
+                REM Configurer le contexte kubectl
+                echo Setting kubectl context...
                 kubectl config use-context kind-%CLUSTER_NAME%
+                
+                REM Vérifier la connectivité
+                echo Checking cluster info...
                 kubectl cluster-info
+                
+                REM Attendre que les nodes soient prêts
+                echo Waiting for nodes to be ready...
                 kubectl wait --for=condition=Ready nodes --all --timeout=180s
+                
+                REM Afficher les nodes
+                echo.
+                echo Current nodes status:
                 kubectl get nodes
+                
+                REM Vérifier l'API server
+                echo.
+                echo Checking API server health...
+                kubectl get --raw /healthz
+                
+                REM Afficher les pods système
+                echo.
+                echo System pods status:
                 kubectl get pods -n kube-system
+                
                 echo ========================================
-                echo Cluster is ready
+                echo Cluster is ready and accessible!
                 echo ========================================
                 '''
             }
@@ -135,10 +196,28 @@ pipeline {
                     echo Deploying with Terraform...
                     echo ========================================
                     
+                    REM S'assurer que le bon contexte est utilisé
+                    echo Configuring Terraform with Kind cluster context...
                     kubectl config use-context kind-%CLUSTER_NAME%
-                    echo Current context: 
+                    
+                    REM Afficher la configuration actuelle
+                    echo Current kubectl context:
                     kubectl config current-context
+                    
+                    REM Afficher l'endpoint API
+                    echo.
+                    echo Kubernetes API endpoint:
+                    kubectl config view --minify -o jsonpath="{.clusters[0].cluster.server}"
+                    echo.
+                    
+                    REM Petite pause pour s'assurer que tout est stable
+                    timeout /t 5 /nobreak >nul
+                    
+                    REM Déployer avec Terraform
+                    echo.
+                    echo Starting Terraform deployment...
                     terraform apply -auto-approve
+                    
                     echo ========================================
                     echo Terraform deployment completed
                     echo ========================================
@@ -154,30 +233,21 @@ pipeline {
                 echo ========================================
                 echo Waiting for pods to be ready...
                 echo ========================================
-
-                set MAX_RETRIES=30
-                set SLEEP_TIME=10
-
-                for %%L in (redis backend frontend) do (
-                    echo Waiting for %%L pods...
-                    set /a COUNTER=0
-                    :WAIT_LOOP_%%L
-                    kubectl get pods -l app=%%L -o jsonpath="{.items[?(@.status.phase!='Running')].metadata.name}" > temp.txt
-                    set /p NOT_READY=<temp.txt
-                    del temp.txt
-                    if defined NOT_READY (
-                        echo %%L pods not ready: !NOT_READY!
-                        set /a COUNTER+=1
-                        if !COUNTER! lss %MAX_RETRIES% (
-                            timeout /t %SLEEP_TIME% >nul
-                            goto WAIT_LOOP_%%L
-                        ) else (
-                            echo WARNING: Some %%L pods never became ready
-                        )
-                    ) else (
-                        echo %%L pods are ready
-                    )
-                )
+                
+                REM Attendre un peu pour que les pods commencent à se créer
+                timeout /t 10 /nobreak >nul
+                
+                echo Waiting for Redis pods...
+                kubectl wait --for=condition=Ready pod -l app=redis --timeout=300s || echo Redis pods not ready yet
+                
+                echo.
+                echo Waiting for Backend pods...
+                kubectl wait --for=condition=Ready pod -l app=backend --timeout=300s || echo Backend pods not ready yet
+                
+                echo.
+                echo Waiting for Frontend pods...
+                kubectl wait --for=condition=Ready pod -l app=frontend --timeout=300s || echo Frontend pods not ready yet
+                
                 echo ========================================
                 echo Pod readiness check completed
                 echo ========================================
@@ -192,17 +262,47 @@ pipeline {
                 echo ========================================
                 echo Deployment Verification
                 echo ========================================
-
+                
+                echo.
+                echo --- All Pods Status ---
                 kubectl get pods -A
+                
+                echo.
+                echo --- Default Namespace Pods (Detailed) ---
+                kubectl get pods -o wide
+                
+                echo.
+                echo --- Services Status ---
                 kubectl get svc -A
+                
+                echo.
+                echo --- Nodes Status ---
                 kubectl get nodes
+                
+                echo.
+                echo --- Deployments Status ---
                 kubectl get deployments
-
-                for %%L in (backend frontend redis) do (
-                    echo.
-                    echo --- %%L Logs (last 20 lines) ---
-                    kubectl logs -l app=%%L --tail=20 --all-containers=true || echo No %%L logs available
-                )
+                
+                echo.
+                echo --- Backend Pod Details ---
+                kubectl describe pods -l app=backend || echo No backend pods found
+                
+                echo.
+                echo --- Frontend Pod Details ---
+                kubectl describe pods -l app=frontend || echo No frontend pods found
+                
+                echo.
+                echo --- Backend Logs (last 20 lines) ---
+                kubectl logs -l app=backend --tail=20 --all-containers=true || echo No backend logs available
+                
+                echo.
+                echo --- Frontend Logs (last 20 lines) ---
+                kubectl logs -l app=frontend --tail=20 --all-containers=true || echo No frontend logs available
+                
+                echo.
+                echo --- Redis Logs (last 20 lines) ---
+                kubectl logs -l app=redis --tail=20 --all-containers=true || echo No redis logs available
+                
                 echo ========================================
                 '''
             }
@@ -218,33 +318,63 @@ pipeline {
             echo "=========================================="
             echo "✓ Pipeline completed successfully!"
             echo "=========================================="
-            echo "Frontend: http://localhost:30001"
-            echo "Backend:  http://localhost:30002"
-            echo "Cluster %CLUSTER_NAME% ready for reuse"
+            echo "Access your application:"
+            echo "  Frontend: http://localhost:30001"
+            echo "  Backend:  http://localhost:30002"
+            echo ""
+            echo "Useful commands:"
+            echo "  kubectl get pods"
+            echo "  kubectl get svc"
+            echo "  kubectl logs -l app=backend"
+            echo "  kubectl logs -l app=frontend"
+            echo ""
+            echo "Cluster %CLUSTER_NAME% is ready and will be reused in next builds"
+            echo "=========================================="
         }
         failure {
             echo "=========================================="
             echo "✗ Pipeline failed"
             echo "=========================================="
             bat '''
+            @echo off
+            echo.
+            echo --- Debugging Information ---
+            echo.
             echo Current Context:
             kubectl config current-context || echo Cannot get context
+            
+            echo.
             echo Cluster Info:
             kubectl cluster-info || echo Cannot get cluster info
+            
+            echo.
             echo All Pods in all namespaces:
             kubectl get pods -A || echo Cannot get pods
+            
+            echo.
             echo Default namespace pods details:
             kubectl get pods -o wide || echo Cannot get pods details
+            
+            echo.
             echo Backend pod description:
             kubectl describe pods -l app=backend || echo Cannot describe backend pods
+            
+            echo.
             echo Frontend pod description:
             kubectl describe pods -l app=frontend || echo Cannot describe frontend pods
+            
+            echo.
             echo Redis pod description:
             kubectl describe pods -l app=redis || echo Cannot describe redis pods
+            
+            echo.
             echo Events:
             kubectl get events --sort-by=.metadata.creationTimestamp || echo Cannot get events
             '''
-            echo "To clean up and retry: kind delete cluster --name %CLUSTER_NAME%"
+            echo ""
+            echo "To clean up and retry:"
+            echo "  kind delete cluster --name %CLUSTER_NAME%"
+            echo "=========================================="
         }
     }
 }
