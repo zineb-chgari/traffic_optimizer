@@ -2,7 +2,6 @@ pipeline {
     agent any
     
     environment {
-        // Configuration du PATH avec tous les outils nécessaires
         PATH = "C:\\Program Files\\Docker\\Docker\\resources\\bin;C:\\ProgramData\\chocolatey\\bin;${env.PATH}"
         CLUSTER_NAME = 'k8s-terraform'
         BUILD_TAG = "${BUILD_NUMBER}"
@@ -104,23 +103,25 @@ pipeline {
         stage('Setup Kind Cluster') {
             steps {
                 bat """
-                    echo Checking for existing cluster...
-                    kind get clusters 2>nul | findstr ${CLUSTER_NAME} && (
-                        echo Cluster ${CLUSTER_NAME} already exists
-                    ) || (
-                        echo Creating new cluster ${CLUSTER_NAME}...
-                        kind create cluster --name ${CLUSTER_NAME}
-                    )
+                    echo ==========================================
+                    echo === SETTING UP KIND CLUSTER ===
+                    echo ==========================================
                     
-                    echo Listing all contexts...
+                    echo Deleting existing cluster if present...
+                    kind delete cluster --name ${CLUSTER_NAME} 2>nul || echo No existing cluster to delete
+                    
+                    echo Creating fresh cluster ${CLUSTER_NAME}...
+                    kind create cluster --name ${CLUSTER_NAME}
+                    
+                    echo Waiting for cluster to be ready...
+                    timeout /t 10 /nobreak
+                    
+                    echo Verifying kubectl configuration...
                     kubectl config get-contexts
+                    kubectl config current-context
+                    kubectl get nodes
                     
-                    echo Setting kubectl context...
-                    kubectl cluster-info --context kind-${CLUSTER_NAME} || (
-                        echo Context not found, checking available contexts...
-                        kubectl config get-contexts
-                        echo Using default context...
-                    )
+                    echo Cluster setup complete!
                 """
             }
         }
@@ -129,8 +130,9 @@ pipeline {
             steps {
                 bat '''
                     echo Verifying cluster connection...
-                    kubectl config get-contexts
-                    kubectl get nodes || echo Cannot connect to cluster
+                    kubectl cluster-info
+                    kubectl get nodes -o wide
+                    kubectl get namespaces
                 '''
             }
         }
@@ -138,12 +140,20 @@ pipeline {
         stage('Load Images to Kind') {
             steps {
                 bat """
-                    echo Loading images into Kind cluster...
+                    echo ==========================================
+                    echo === LOADING IMAGES TO KIND ===
+                    echo ==========================================
+                    
+                    echo Loading backend image...
                     kind load docker-image transport-backend:latest --name ${CLUSTER_NAME}
+                    
+                    echo Loading frontend image...
                     kind load docker-image transport-frontend:latest --name ${CLUSTER_NAME}
                     
                     echo Verifying images are loaded...
-                    docker exec ${CLUSTER_NAME}-control-plane crictl images | findstr transport || echo Images loaded
+                    docker exec ${CLUSTER_NAME}-control-plane crictl images | findstr transport
+                    
+                    echo Images loaded successfully!
                 """
             }
         }
@@ -152,23 +162,14 @@ pipeline {
             steps {
                 dir('infrastructure/Terraform') {
                     bat '''
-                        echo Cleaning potential state issues...
-                        terraform state rm kubernetes_deployment_v1.backend 2>nul || echo No backend state to remove
-                        terraform state rm kubernetes_deployment_v1.frontend 2>nul || echo No frontend state to remove
-                        
-                        echo Checking for existing deployments...
-                        kubectl get deployment backend 2>nul && (
-                            echo Importing existing backend deployment...
-                            terraform import kubernetes_deployment_v1.backend default/backend
-                        ) || echo No backend deployment to import
-                        
-                        kubectl get deployment frontend 2>nul && (
-                            echo Importing existing frontend deployment...
-                            terraform import kubernetes_deployment_v1.frontend default/frontend
-                        ) || echo No frontend deployment to import
+                        echo ==========================================
+                        echo === DEPLOYING WITH TERRAFORM ===
+                        echo ==========================================
                         
                         echo Applying Terraform configuration...
                         terraform apply -auto-approve
+                        
+                        echo Deployment complete!
                     '''
                 }
             }
@@ -178,16 +179,21 @@ pipeline {
             steps {
                 timeout(time: 5, unit: 'MINUTES') {
                     bat '''
-                        echo Waiting for pods to be ready...
+                        echo ==========================================
+                        echo === WAITING FOR PODS ===
+                        echo ==========================================
                         
                         echo Waiting for backend pods...
-                        kubectl wait --for=condition=ready pod -l app=backend --timeout=300s || echo Backend pods not ready yet
+                        kubectl wait --for=condition=ready pod -l app=backend --timeout=300s || echo Backend pods still starting
                         
                         echo Waiting for frontend pods...
-                        kubectl wait --for=condition=ready pod -l app=frontend --timeout=300s || echo Frontend pods not ready yet
+                        kubectl wait --for=condition=ready pod -l app=frontend --timeout=300s || echo Frontend pods still starting
                         
                         echo Waiting for redis pod...
-                        kubectl wait --for=condition=ready pod -l app=redis --timeout=300s || echo Redis pod not ready yet
+                        kubectl wait --for=condition=ready pod -l app=redis --timeout=300s || echo Redis pod still starting
+                        
+                        echo Current pod status:
+                        kubectl get pods
                     '''
                 }
             }
@@ -214,15 +220,15 @@ pipeline {
                     
                     echo.
                     echo === Backend Logs (last 10 lines) ===
-                    kubectl logs -l app=backend --tail=10 --all-containers=true || echo No backend logs available
+                    kubectl logs -l app=backend --tail=10 --all-containers=true 2>nul || echo No backend logs yet
                     
                     echo.
                     echo === Frontend Logs (last 10 lines) ===
-                    kubectl logs -l app=frontend --tail=10 --all-containers=true || echo No frontend logs available
+                    kubectl logs -l app=frontend --tail=10 --all-containers=true 2>nul || echo No frontend logs yet
                     
                     echo.
                     echo === Redis Logs (last 10 lines) ===
-                    kubectl logs -l app=redis --tail=10 || echo No redis logs available
+                    kubectl logs -l app=redis --tail=10 2>nul || echo No redis logs yet
                 '''
             }
         }
@@ -240,10 +246,20 @@ pipeline {
             echo '=========================================='
             bat '''
                 echo.
+                echo ==========================================
                 echo === ACCESS YOUR APPLICATION ===
+                echo ==========================================
                 echo.
-                echo Frontend: kubectl port-forward service/frontend-service 8080:80
-                echo Backend:  kubectl port-forward service/backend-service 3000:3000
+                echo To access your application, run:
+                echo.
+                echo   Frontend: kubectl port-forward service/frontend-service 8081:80
+                echo   Backend:  kubectl port-forward service/backend-service 3000:3000
+                echo.
+                echo Then open in browser:
+                echo   Frontend: http://localhost:8081
+                echo   Backend:  http://localhost:3000
+                echo.
+                kubectl get svc
                 echo.
             '''
         }
@@ -256,17 +272,17 @@ pipeline {
                 echo.
                 echo === DEBUGGING INFORMATION ===
                 echo.
-                echo Available Contexts:
-                kubectl config get-contexts || echo Cannot get contexts
-                echo.
-                echo Current Context:
-                kubectl config current-context || echo Cannot get context
+                echo Contexts:
+                kubectl config get-contexts || echo No contexts available
                 echo.
                 echo Cluster Info:
                 kubectl cluster-info || echo Cannot get cluster info
                 echo.
-                echo All Pods:
+                echo Pods:
                 kubectl get pods --all-namespaces || echo Cannot get pods
+                echo.
+                echo Events:
+                kubectl get events --sort-by=.metadata.creationTimestamp --all-namespaces | findstr /V "Normal" || echo Cannot get events
                 echo.
                 echo Docker Images:
                 docker images | findstr transport
