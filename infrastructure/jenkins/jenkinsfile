@@ -1,15 +1,78 @@
-terraform {
-  required_version = ">= 1.0"
-  
-  required_providers {
-    kubernetes = {
-      source  = "hashicorp/kubernetes"
-      version = "~> 3.0"
-    }
-  }
-}
+pipeline {
+    agent any
 
-provider "kubernetes" {
-  config_path    = "~/.kube/config"
-  config_context = "kind-k8s-terraform"
+    environment {
+        BACKEND_IMAGE = 'transport-backend'
+        FRONTEND_IMAGE = 'transport-frontend'
+        IMAGE_TAG = "${BUILD_NUMBER}"
+        KUBECONFIG = "${WORKSPACE}\\.kube\\config"
+    }
+
+    stages {
+
+        stage('Checkout SCM') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Check Environment') {
+            steps {
+                bat 'docker --version || echo Docker not found'
+                bat 'terraform --version || echo Terraform not found'
+            }
+        }
+
+        stage('Terraform Init') {
+            steps {
+                bat 'terraform init'
+            }
+        }
+
+        stage('Terraform Plan') {
+            steps {
+                bat 'terraform plan -out=tfplan'
+            }
+        }
+
+        stage('Terraform Apply') {
+            steps {
+                bat 'terraform apply -auto-approve tfplan'
+            }
+        }
+
+        stage('Build Backend Image') {
+            steps {
+                bat "docker build -t ${BACKEND_IMAGE}:${IMAGE_TAG} ./backend"
+            }
+        }
+
+        stage('Build Frontend Image') {
+            steps {
+                bat "docker build -t ${FRONTEND_IMAGE}:${IMAGE_TAG} ./frontend"
+            }
+        }
+
+        stage('Load Images to Kind') {
+            steps {
+                bat "kind load docker-image ${BACKEND_IMAGE}:${IMAGE_TAG} --name k8s-terraform"
+                bat "kind load docker-image ${FRONTEND_IMAGE}:${IMAGE_TAG} --name k8s-terraform"
+            }
+        }
+
+        stage('Deploy to Kubernetes') {
+            steps {
+                bat 'kubectl apply -f k8s/deployment.yaml'
+            }
+        }
+    }
+
+    post {
+        success {
+            echo 'Pipeline completed successfully.'
+        }
+        failure {
+            echo 'Pipeline failed. You can clean up with: kind delete cluster --name k8s-terraform'
+        }
+    }
 }
