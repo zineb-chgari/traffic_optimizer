@@ -37,7 +37,11 @@ pipeline {
             steps {
                 dir('infrastructure\\Terraform') {
                     bat '''
-                    terraform init -input=false
+                    REM Nettoyer les anciens states
+                    if exist terraform.tfstate del /f terraform.tfstate
+                    if exist terraform.tfstate.backup del /f terraform.tfstate.backup
+                    if exist .terraform\\terraform.tfstate del /f .terraform\\terraform.tfstate
+                    terraform init -reconfigure -input=false
                     terraform validate
                     '''
                 }
@@ -172,6 +176,37 @@ pipeline {
             }
         }
 
+        stage('Clean Terraform State') {
+            steps {
+                dir('infrastructure\\Terraform') {
+                    bat '''
+                    @echo off
+                    echo ========================================
+                    echo Cleaning Terraform state for fresh deployment...
+                    echo ========================================
+                    
+                    if exist terraform.tfstate (
+                        echo Removing terraform.tfstate
+                        del /f terraform.tfstate
+                    )
+                    
+                    if exist terraform.tfstate.backup (
+                        echo Removing terraform.tfstate.backup
+                        del /f terraform.tfstate.backup
+                    )
+                    
+                    if exist .terraform\\terraform.tfstate (
+                        echo Removing .terraform\\terraform.tfstate
+                        del /f .terraform\\terraform.tfstate
+                    )
+                    
+                    echo State cleaned successfully
+                    echo ========================================
+                    '''
+                }
+            }
+        }
+
         stage('Load Images to Kind') {
             steps {
                 bat '''
@@ -210,16 +245,27 @@ pipeline {
                     kubectl config view --minify -o jsonpath="{.clusters[0].cluster.server}"
                     echo.
                     
+                    REM Réinitialiser Terraform avec la nouvelle configuration
+                    echo.
+                    echo Reinitializing Terraform...
+                    terraform init -reconfigure -input=false
+                    
                     REM Petite pause pour s'assurer que tout est stable
-                    timeout /t 5 /nobreak >nul
+                    echo Waiting for cluster stabilization...
+                    timeout /t 10 /nobreak >nul
                     
                     REM Déployer avec Terraform
                     echo.
                     echo Starting Terraform deployment...
-                    terraform apply -auto-approve
+                    terraform apply -auto-approve -refresh=true
+                    
+                    if errorlevel 1 (
+                        echo [ERROR] Terraform deployment failed
+                        exit /b 1
+                    )
                     
                     echo ========================================
-                    echo Terraform deployment completed
+                    echo Terraform deployment completed successfully
                     echo ========================================
                     '''
                 }
@@ -235,7 +281,7 @@ pipeline {
                 echo ========================================
                 
                 REM Attendre un peu pour que les pods commencent à se créer
-                timeout /t 10 /nobreak >nul
+                timeout /t 15 /nobreak >nul
                 
                 echo Waiting for Redis pods...
                 kubectl wait --for=condition=Ready pod -l app=redis --timeout=300s || echo Redis pods not ready yet
@@ -370,6 +416,10 @@ pipeline {
             echo.
             echo Events:
             kubectl get events --sort-by=.metadata.creationTimestamp || echo Cannot get events
+            
+            echo.
+            echo Terraform State (if exists):
+            type infrastructure\\Terraform\\terraform.tfstate 2>nul || echo No terraform state found
             '''
             echo ""
             echo "To clean up and retry:"
