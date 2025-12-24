@@ -54,10 +54,28 @@ pipeline {
                 script {
                     retry(3) {
                         bat '''
-                            echo Pulling base images...
+                            echo ==========================================
+                            echo === PULLING BASE IMAGES ===
+                            echo ==========================================
+                            echo Pulling node:20-alpine...
                             docker pull node:20-alpine
+                            
+                            echo.
+                            echo Pulling nginx:alpine...
                             docker pull nginx:alpine
+                            
+                            echo.
+                            echo Pulling redis:7-alpine...
                             docker pull redis:7-alpine
+                            
+                            echo.
+                            echo Verifying pulled images...
+                            docker images | findstr "node.*20-alpine"
+                            docker images | findstr "nginx.*alpine"
+                            docker images | findstr "redis.*7-alpine"
+                            
+                            echo.
+                            echo All base images pulled successfully!
                         '''
                     }
                 }
@@ -70,11 +88,16 @@ pipeline {
                     retry(2) {
                         timeout(time: 10, unit: 'MINUTES') {
                             bat """
-                                echo Building backend image...
+                                echo ==========================================
+                                echo === BUILDING BACKEND IMAGE ===
+                                echo ==========================================
                                 docker build -f backend\\Dockerfile ^
                                     -t transport-backend:latest ^
                                     -t transport-backend:${BUILD_TAG} ^
                                     backend
+                                
+                                echo.
+                                echo Backend image built successfully!
                             """
                         }
                     }
@@ -88,11 +111,16 @@ pipeline {
                     retry(2) {
                         timeout(time: 10, unit: 'MINUTES') {
                             bat """
-                                echo Building frontend image...
+                                echo ==========================================
+                                echo === BUILDING FRONTEND IMAGE ===
+                                echo ==========================================
                                 docker build -f frontend\\Dockerfile ^
                                     -t transport-frontend:latest ^
                                     -t transport-frontend:${BUILD_TAG} ^
                                     frontend
+                                
+                                echo.
+                                echo Frontend image built successfully!
                             """
                         }
                     }
@@ -100,19 +128,35 @@ pipeline {
             }
         }
         
-        stage('Setup Kind Cluster') {
+        stage('Cleanup Old Cluster') {
             steps {
                 bat """
                     echo ==========================================
-                    echo === SETTING UP KIND CLUSTER ===
+                    echo === CLEANING UP OLD CLUSTER ===
                     echo ==========================================
                     
                     echo Deleting existing cluster if present...
                     kind delete cluster --name ${CLUSTER_NAME} 2>nul || echo No existing cluster to delete
                     
+                    echo Waiting for cleanup to complete...
+                    ping 127.0.0.1 -n 3 >nul
+                    
+                    echo Cleanup complete!
+                """
+            }
+        }
+        
+        stage('Setup Kind Cluster') {
+            steps {
+                bat """
+                    echo ==========================================
+                    echo === CREATING KIND CLUSTER ===
+                    echo ==========================================
+                    
                     echo Creating fresh cluster ${CLUSTER_NAME}...
                     kind create cluster --name ${CLUSTER_NAME}
                     
+                    echo.
                     echo Waiting for cluster to be fully ready...
                     echo This may take 1-2 minutes...
                     
@@ -124,10 +168,12 @@ pipeline {
                         goto wait_loop
                     )
                     
+                    echo.
                     echo Node is ready! Waiting for system pods...
                     kubectl wait --for=condition=ready pod -l k8s-app=kube-dns -n kube-system --timeout=180s
                     
-                    echo Cluster is fully operational!
+                    echo.
+                    echo === CLUSTER IS FULLY OPERATIONAL ===
                     kubectl get nodes
                     kubectl get pods -n kube-system
                 """
@@ -137,10 +183,27 @@ pipeline {
         stage('Verify Cluster Connection') {
             steps {
                 bat '''
-                    echo Verifying cluster connection...
+                    echo ==========================================
+                    echo === VERIFYING CLUSTER CONNECTION ===
+                    echo ==========================================
+                    
+                    echo Cluster Info:
                     kubectl cluster-info
+                    
+                    echo.
+                    echo Nodes:
                     kubectl get nodes -o wide
+                    
+                    echo.
+                    echo Namespaces:
                     kubectl get namespaces
+                    
+                    echo.
+                    echo System Pods:
+                    kubectl get pods -n kube-system
+                    
+                    echo.
+                    echo Cluster verification complete!
                 '''
             }
         }
@@ -149,20 +212,58 @@ pipeline {
             steps {
                 bat """
                     echo ==========================================
-                    echo === LOADING IMAGES TO KIND ===
+                    echo === LOADING IMAGES TO KIND CLUSTER ===
                     echo ==========================================
                     
                     echo Loading backend image...
                     kind load docker-image transport-backend:latest --name ${CLUSTER_NAME}
+                    echo Backend image loaded!
                     
+                    echo.
                     echo Loading frontend image...
                     kind load docker-image transport-frontend:latest --name ${CLUSTER_NAME}
+                    echo Frontend image loaded!
                     
-                    echo Verifying images are loaded...
+                    echo.
+                    echo Loading Redis base image...
+                    kind load docker-image redis:7-alpine --name ${CLUSTER_NAME}
+                    echo Redis image loaded!
+                    
+                    echo.
+                    echo ==========================================
+                    echo === VERIFYING LOADED IMAGES ===
+                    echo ==========================================
                     docker exec ${CLUSTER_NAME}-control-plane crictl images | findstr transport
+                    docker exec ${CLUSTER_NAME}-control-plane crictl images | findstr redis
                     
-                    echo Images loaded successfully!
+                    echo.
+                    echo All images loaded successfully into Kind cluster!
                 """
+            }
+        }
+        
+        stage('Pre-Deploy Diagnostics') {
+            steps {
+                bat '''
+                    echo ==========================================
+                    echo === PRE-DEPLOYMENT DIAGNOSTICS ===
+                    echo ==========================================
+                    
+                    echo Available images in Kind cluster:
+                    docker exec k8s-terraform-control-plane crictl images
+                    
+                    echo.
+                    echo Cluster resources:
+                    kubectl top nodes 2>nul || echo "Metrics server not available (normal for Kind)"
+                    
+                    echo.
+                    echo Node details:
+                    kubectl describe node k8s-terraform-control-plane | findstr "Allocatable" -A 5
+                    
+                    echo.
+                    echo Current events:
+                    kubectl get events --all-namespaces --sort-by=.metadata.creationTimestamp | findstr /V "Normal" || echo "No warning events"
+                '''
             }
         }
         
@@ -177,31 +278,75 @@ pipeline {
                         echo Applying Terraform configuration...
                         terraform apply -auto-approve
                         
-                        echo Deployment complete!
+                        echo.
+                        echo Terraform deployment initiated!
                     '''
                 }
             }
         }
         
-        stage('Wait for Pods') {
+        stage('Wait for Deployments') {
+            steps {
+                timeout(time: 10, unit: 'MINUTES') {
+                    bat '''
+                        echo ==========================================
+                        echo === WAITING FOR DEPLOYMENTS ===
+                        echo ==========================================
+                        
+                        echo Waiting for Redis deployment...
+                        kubectl rollout status deployment/redis --timeout=300s || (
+                            echo WARNING: Redis deployment timeout!
+                            kubectl get pods -l app=redis
+                            kubectl describe pods -l app=redis
+                        )
+                        
+                        echo.
+                        echo Waiting for Backend deployment...
+                        kubectl rollout status deployment/backend --timeout=300s || (
+                            echo WARNING: Backend deployment timeout!
+                            kubectl get pods -l app=backend
+                            kubectl describe pods -l app=backend
+                        )
+                        
+                        echo.
+                        echo Waiting for Frontend deployment...
+                        kubectl rollout status deployment/frontend --timeout=300s || (
+                            echo WARNING: Frontend deployment timeout!
+                            kubectl get pods -l app=frontend
+                            kubectl describe pods -l app=frontend
+                        )
+                        
+                        echo.
+                        echo === DEPLOYMENT STATUS ===
+                        kubectl get deployments
+                        kubectl get pods
+                    '''
+                }
+            }
+        }
+        
+        stage('Wait for Pods Ready') {
             steps {
                 timeout(time: 5, unit: 'MINUTES') {
                     bat '''
                         echo ==========================================
-                        echo === WAITING FOR PODS ===
+                        echo === WAITING FOR PODS TO BE READY ===
                         echo ==========================================
                         
-                        echo Waiting for backend pods...
-                        kubectl wait --for=condition=ready pod -l app=backend --timeout=300s || echo Backend pods still starting
+                        echo Waiting for Redis pod...
+                        kubectl wait --for=condition=ready pod -l app=redis --timeout=180s || echo Redis pod not ready yet
                         
-                        echo Waiting for frontend pods...
-                        kubectl wait --for=condition=ready pod -l app=frontend --timeout=300s || echo Frontend pods still starting
+                        echo.
+                        echo Waiting for Backend pods...
+                        kubectl wait --for=condition=ready pod -l app=backend --timeout=180s || echo Backend pods not ready yet
                         
-                        echo Waiting for redis pod...
-                        kubectl wait --for=condition=ready pod -l app=redis --timeout=300s || echo Redis pod still starting
+                        echo.
+                        echo Waiting for Frontend pods...
+                        kubectl wait --for=condition=ready pod -l app=frontend --timeout=180s || echo Frontend pods not ready yet
                         
-                        echo Current pod status:
-                        kubectl get pods
+                        echo.
+                        echo === CURRENT POD STATUS ===
+                        kubectl get pods -o wide
                     '''
                 }
             }
@@ -211,32 +356,83 @@ pipeline {
             steps {
                 bat '''
                     echo ==========================================
-                    echo === DEPLOYMENT STATUS ===
+                    echo === DEPLOYMENT VERIFICATION ===
                     echo ==========================================
                     
                     echo.
-                    echo === Pods ===
+                    echo === PODS STATUS ===
                     kubectl get pods -o wide
                     
                     echo.
-                    echo === Services ===
+                    echo === SERVICES ===
                     kubectl get svc
                     
                     echo.
-                    echo === Deployments ===
+                    echo === DEPLOYMENTS ===
                     kubectl get deployment
                     
                     echo.
-                    echo === Backend Logs (last 10 lines) ===
-                    kubectl logs -l app=backend --tail=10 --all-containers=true 2>nul || echo No backend logs yet
+                    echo === ENDPOINTS ===
+                    kubectl get endpoints
                     
                     echo.
-                    echo === Frontend Logs (last 10 lines) ===
-                    kubectl logs -l app=frontend --tail=10 --all-containers=true 2>nul || echo No frontend logs yet
+                    echo ==========================================
+                    echo === POD LOGS SUMMARY ===
+                    echo ==========================================
                     
                     echo.
-                    echo === Redis Logs (last 10 lines) ===
-                    kubectl logs -l app=redis --tail=10 2>nul || echo No redis logs yet
+                    echo === Redis Logs (last 20 lines) ===
+                    kubectl logs -l app=redis --tail=20 --all-containers=true 2>nul || echo No Redis logs available yet
+                    
+                    echo.
+                    echo === Backend Logs (last 20 lines) ===
+                    kubectl logs -l app=backend --tail=20 --all-containers=true 2>nul || echo No Backend logs available yet
+                    
+                    echo.
+                    echo === Frontend Logs (last 20 lines) ===
+                    kubectl logs -l app=frontend --tail=20 --all-containers=true 2>nul || echo No Frontend logs available yet
+                    
+                    echo.
+                    echo ==========================================
+                    echo === HEALTH CHECKS ===
+                    echo ==========================================
+                    
+                    echo Testing Redis connectivity...
+                    kubectl exec -it deployment/redis -- redis-cli ping 2>nul || echo Redis not responding
+                    
+                    echo.
+                    echo Testing Backend health endpoint...
+                    kubectl exec -it deployment/backend -- wget -q -O- http://localhost:3000/health 2>nul || echo Backend health check failed
+                '''
+            }
+        }
+        
+        stage('Final Status Report') {
+            steps {
+                bat '''
+                    echo.
+                    echo ==========================================
+                    echo === FINAL DEPLOYMENT STATUS ===
+                    echo ==========================================
+                    
+                    echo.
+                    echo Checking all pods status...
+                    kubectl get pods --all-namespaces
+                    
+                    echo.
+                    echo Checking deployments...
+                    kubectl get deployments
+                    
+                    echo.
+                    echo Checking services...
+                    kubectl get svc
+                    
+                    echo.
+                    echo Recent events (errors only):
+                    kubectl get events --all-namespaces --field-selector type!=Normal --sort-by=.metadata.creationTimestamp | findstr /V "LAST" || echo No error events found
+                    
+                    echo.
+                    echo ==========================================
                 '''
             }
         }
@@ -244,56 +440,131 @@ pipeline {
     
     post {
         always {
-            echo 'Pipeline execution completed'
+            echo 'Pipeline execution completed - Cleaning up...'
             bat 'docker system prune -f || exit 0'
         }
         
         success {
+            echo ''
             echo '=========================================='
-            echo '✓ PIPELINE SUCCEEDED'
+            echo '✓✓✓ PIPELINE SUCCEEDED ✓✓✓'
             echo '=========================================='
             bat '''
                 echo.
                 echo ==========================================
-                echo === ACCESS YOUR APPLICATION ===
+                echo === HOW TO ACCESS YOUR APPLICATION ===
                 echo ==========================================
                 echo.
-                echo To access your application, run:
+                echo Your application has been successfully deployed!
                 echo.
-                echo   Frontend: kubectl port-forward service/frontend-service 8080:80
-                echo   Backend:  kubectl port-forward service/backend-service 3000:3000
+                echo To access the services, open a NEW terminal and run:
                 echo.
-                echo Then open in browser:
-                echo   Frontend: http://localhost:8080
-                echo   Backend:  http://localhost:3000
+                echo   FOR FRONTEND:
+                echo   kubectl port-forward service/frontend-service 8080:80
+                echo   Then open: http://localhost:8080
                 echo.
+                echo   FOR BACKEND:
+                echo   kubectl port-forward service/backend-service 3000:3000
+                echo   Then open: http://localhost:3000
+                echo.
+                echo   FOR REDIS (if needed):
+                echo   kubectl port-forward service/redis-service 6379:6379
+                echo.
+                echo ==========================================
+                echo === DEPLOYED SERVICES ===
+                echo ==========================================
                 kubectl get svc
+                echo.
+                echo ==========================================
+                echo === RUNNING PODS ===
+                echo ==========================================
+                kubectl get pods -o wide
+                echo.
+                echo ==========================================
+                echo === USEFUL COMMANDS ===
+                echo ==========================================
+                echo.
+                echo View logs:
+                echo   kubectl logs -f deployment/backend
+                echo   kubectl logs -f deployment/frontend
+                echo   kubectl logs -f deployment/redis
+                echo.
+                echo Scale deployments:
+                echo   kubectl scale deployment/backend --replicas=5
+                echo   kubectl scale deployment/frontend --replicas=3
+                echo.
+                echo Check pod details:
+                echo   kubectl describe pod [POD_NAME]
+                echo.
+                echo Delete cluster when done:
+                echo   kind delete cluster --name k8s-terraform
                 echo.
             '''
         }
         
         failure {
+            echo ''
             echo '=========================================='
-            echo '✗ PIPELINE FAILED'
+            echo '✗✗✗ PIPELINE FAILED ✗✗✗'
             echo '=========================================='
             bat '''
                 echo.
-                echo === DEBUGGING INFORMATION ===
+                echo ==========================================
+                echo === FAILURE DIAGNOSTICS ===
+                echo ==========================================
+                
                 echo.
-                echo Contexts:
-                kubectl config get-contexts || echo No contexts available
+                echo === Kubernetes Contexts ===
+                kubectl config get-contexts || echo Cannot get contexts
+                
                 echo.
-                echo Cluster Info:
+                echo === Cluster Info ===
                 kubectl cluster-info || echo Cannot get cluster info
+                
                 echo.
-                echo Pods:
-                kubectl get pods --all-namespaces || echo Cannot get pods
+                echo === All Pods Status ===
+                kubectl get pods --all-namespaces -o wide || echo Cannot get pods
+                
                 echo.
-                echo Events:
-                kubectl get events --sort-by=.metadata.creationTimestamp --all-namespaces | findstr /V "Normal" || echo Cannot get events
+                echo === Recent Events (All) ===
+                kubectl get events --all-namespaces --sort-by=.metadata.creationTimestamp || echo Cannot get events
+                
                 echo.
-                echo Docker Images:
-                docker images | findstr transport
+                echo === Failed Pods Details ===
+                for /f "tokens=1" %%i in ('kubectl get pods -o name 2^>nul') do (
+                    echo.
+                    echo Describing %%i
+                    kubectl describe %%i 2>nul
+                    echo.
+                    echo Logs for %%i
+                    kubectl logs %%i --all-containers=true --tail=50 2>nul || echo No logs available
+                )
+                
+                echo.
+                echo === Docker Images in Kind ===
+                docker exec k8s-terraform-control-plane crictl images 2>nul || echo Cannot access Kind cluster
+                
+                echo.
+                echo === Local Docker Images ===
+                docker images | findstr "transport\|redis"
+                
+                echo.
+                echo === Node Status ===
+                kubectl describe node k8s-terraform-control-plane 2>nul || echo Cannot describe node
+                
+                echo.
+                echo ==========================================
+                echo === TROUBLESHOOTING TIPS ===
+                echo ==========================================
+                echo.
+                echo 1. Check if Docker is running: docker ps
+                echo 2. Check Kind cluster: kind get clusters
+                echo 3. Check kubectl context: kubectl config current-context
+                echo 4. View detailed logs: kubectl logs -l app=redis --previous
+                echo 5. Check image pull status: kubectl describe pod [POD_NAME]
+                echo 6. Verify images in Kind: docker exec k8s-terraform-control-plane crictl images
+                echo.
+                echo ==========================================
             '''
         }
     }
