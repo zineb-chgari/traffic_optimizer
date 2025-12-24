@@ -2,21 +2,17 @@ pipeline {
     agent any
 
     environment {
-        PATH = "C:\\Program Files\\Docker\\Docker\\resources\\bin;C:\\ProgramData\\chocolatey\\bin;C:\\Windows\\System32;C:\\Windows;C:\\Windows\\System32\\WindowsPowerShell\\v1.0;C:\\Program Files\\Python313;C:\\Program Files\\Python313\\Scripts"
-        BACKEND_IMAGE = "transport-backend"
-        FRONTEND_IMAGE = "transport-frontend"
+        DOCKER_REG = ''
+        BACKEND_IMAGE = 'transport-backend'
+        FRONTEND_IMAGE = 'transport-frontend'
         IMAGE_TAG = "${BUILD_NUMBER}"
-        CLUSTER_NAME = "k8s-terraform-${BUILD_NUMBER}"
-        KUBECONFIG = "${WORKSPACE}\\.kube\\config"
+        KUBECONFIG = "${WORKSPACE}/.kube/config"
     }
 
     stages {
-
         stage('Checkout SCM') {
             steps {
-                checkout([$class: 'GitSCM', 
-                          branches: [[name: '*/main']], 
-                          userRemoteConfigs: [[url: 'https://github.com/zineb-chgari/traffic_optimizer.git']]] )
+                checkout scm
             }
         }
 
@@ -25,139 +21,98 @@ pipeline {
                 bat '''
                 echo === PATH CHECK ===
                 echo %PATH%
-                docker --version || echo Docker not found
-                kubectl version --client || echo kubectl not found
-                terraform version || echo Terraform not found
-                kind version || echo Kind not found
+                docker --version
+                kubectl version --client
+                terraform version
+                kind version
                 '''
             }
         }
 
         stage('Validate Terraform') {
             steps {
-                dir('infrastructure\\Terraform') {
-                    bat '''
-                    terraform init -input=false
-                    terraform validate
-                    '''
+                dir('infrastructure/Terraform') {
+                    bat 'terraform init -input=false'
+                    bat 'terraform validate'
                 }
             }
         }
 
         stage('Build Backend Image') {
             steps {
-                bat '''
-                docker build -f backend\\Dockerfile -t %BACKEND_IMAGE%:latest -t %BACKEND_IMAGE%:%IMAGE_TAG% backend
-                '''
+                bat "docker build -f backend/Dockerfile -t ${BACKEND_IMAGE}:latest backend"
             }
         }
 
         stage('Build Frontend Image') {
             steps {
-                bat '''
-                docker build -f frontend\\Dockerfile -t %FRONTEND_IMAGE%:latest -t %FRONTEND_IMAGE%:%IMAGE_TAG% frontend
-                '''
+                bat "docker build -f frontend/Dockerfile -t ${FRONTEND_IMAGE}:latest frontend"
             }
         }
 
         stage('Setup Kind Cluster') {
             steps {
                 script {
-                    bat """
-                    @echo off
-                    echo ========================================
-                    echo Checking Kind cluster status...
-                    echo ========================================
-
-                    REM Supprimer l'ancien cluster avec le même nom si existe
-                    kind delete cluster --name %CLUSTER_NAME% || echo No existing cluster to delete
-
-                    REM Créer un nouveau cluster
-                    kind create cluster --name %CLUSTER_NAME% --wait 120s
-
-                    echo ========================================
-                    echo Cluster setup completed
-                    echo ========================================
-                    """
+                    bat '''
+                    kind delete cluster --name k8s-terraform-7 || echo Cluster not found
+                    kind create cluster --name k8s-terraform-7
+                    '''
                 }
-            }
-        }
-
-        stage('Verify Cluster Connection') {
-            steps {
-                bat '''
-                @echo off
-                echo ========================================
-                echo Verifying Kubernetes cluster connection...
-                echo ========================================
-
-                kubectl config use-context kind-%CLUSTER_NAME%
-                kubectl cluster-info
-                kubectl wait --for=condition=Ready nodes --all --timeout=180s
-                kubectl get nodes -o wide
-                kubectl get pods -n kube-system
-                '''
             }
         }
 
         stage('Load Images to Kind') {
             steps {
-                bat '''
-                kind load docker-image %BACKEND_IMAGE%:latest --name %CLUSTER_NAME%
-                kind load docker-image %FRONTEND_IMAGE%:latest --name %CLUSTER_NAME%
-                '''
+                bat "kind load docker-image ${BACKEND_IMAGE}:latest --name k8s-terraform-7"
+                bat "kind load docker-image ${FRONTEND_IMAGE}:latest --name k8s-terraform-7"
             }
         }
 
         stage('Deploy with Terraform') {
             steps {
-                dir('infrastructure\\Terraform') {
-                    bat '''
-                    kubectl config use-context kind-%CLUSTER_NAME%
-                    terraform apply -auto-approve
-                    '''
+                dir('infrastructure/Terraform') {
+                    bat 'kubectl config use-context kind-k8s-terraform-7'
+                    bat 'terraform apply -auto-approve'
                 }
             }
         }
 
         stage('Wait for Pods') {
             steps {
-                bat '''
-                kubectl wait --for=condition=Ready pod -l app=redis --timeout=300s || echo Redis pods not ready yet
-                kubectl wait --for=condition=Ready pod -l app=backend --timeout=300s || echo Backend pods not ready yet
-                kubectl wait --for=condition=Ready pod -l app=frontend --timeout=300s || echo Frontend pods not ready yet
-                '''
+                script {
+                    def apps = ['redis', 'backend', 'frontend']
+                    for (app in apps) {
+                        try {
+                            echo "Waiting for pods with label app=${app}..."
+                            bat "kubectl wait --for=condition=Ready pod -l app=${app} --timeout=300s"
+                        } catch (err) {
+                            echo "Pods for ${app} not ready. Showing logs..."
+                            bat "kubectl get pods -l app=${app}"
+                            bat "kubectl logs -l app=${app} --all-containers=true || echo No logs available"
+                            error "Deployment failed for ${app} pods"
+                        }
+                    }
+                }
             }
         }
 
         stage('Verify Deployment') {
             steps {
-                bat '''
-                kubectl get pods -A
-                kubectl get svc -A
-                kubectl get deployments -A
-                kubectl logs -l app=backend --tail=20 --all-containers=true
-                kubectl logs -l app=frontend --tail=20 --all-containers=true
-                kubectl logs -l app=redis --tail=20 --all-containers=true
-                '''
+                bat 'kubectl get all'
             }
         }
     }
 
     post {
         always {
-            echo "Pipeline execution completed"
-            bat "docker system prune -f || exit 0"
-        }
-        success {
-            echo "Pipeline completed successfully"
-            echo "Access your application:"
-            echo "  Frontend: http://localhost:30001"
-            echo "  Backend:  http://localhost:30002"
-            echo "Cluster %CLUSTER_NAME% created and ready for this build."
+            echo "Cleaning up Docker cache..."
+            bat 'docker system prune -f || exit 0'
         }
         failure {
-            echo "Pipeline failed"
+            echo "Pipeline failed. Check logs above for errors."
+        }
+        success {
+            echo "Pipeline executed successfully!"
         }
     }
 }
