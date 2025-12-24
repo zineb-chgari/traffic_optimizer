@@ -2,16 +2,28 @@
 node_modules/
 npm-debug.log
 
-# Env
+# Environment files
 .env
 
-# Docker
+# Docker logs
 *.log
 
-# OS
+# Operating System files
 .DS_Store
 
 # Terraform
 .terraform/
 *.tfstate
 *.tfstate.backup
+
+# Python virtual environments
+infrastructure/Terraform/env312/
+env312/
+
+# Python compiled files
+*.pyc
+__pycache__/
+
+# Frontend/Backend node_modules
+frontend/node_modules/
+backend/node_modules/
