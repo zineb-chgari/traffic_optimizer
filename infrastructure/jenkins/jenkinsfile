@@ -2,21 +2,21 @@ pipeline {
     agent any
 
     environment {
-        DOCKER_REG = ''
-        BACKEND_IMAGE = 'transport-backend'
+        // ===== Docker =====
+        BACKEND_IMAGE  = 'transport-backend'
         FRONTEND_IMAGE = 'transport-frontend'
-        IMAGE_TAG = "${BUILD_NUMBER}"
+        IMAGE_TAG      = "${BUILD_NUMBER}"
 
+        // ===== Kubernetes / Kind =====
         CLUSTER_NAME = 'k8s-terraform'
-        KUBECONFIG = "${WORKSPACE}\\.kube\\config"
+        KUBECONFIG   = "${WORKSPACE}\\.kube\\config"
 
-        GIT_EXEC = 'C:\\Program Files\\Git\\cmd\\git.exe'
-        DOCKER_EXEC = 'C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe'
-
-        // 👉 Mets le chemin COMPLET si pas dans le PATH
-        KUBECTL_EXEC = 'kubectl'
-        TERRAFORM_EXEC = 'terraform'
-        KIND_EXEC = 'kind'
+        // ===== Outils (CHEMINS ABSOLUS) =====
+        GIT_EXEC       = 'C:\\Program Files\\Git\\cmd\\git.exe'
+        DOCKER_EXEC    = 'C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe'
+        KUBECTL_EXEC   = 'C:\\ProgramData\\chocolatey\\bin\\kubectl.exe'
+        TERRAFORM_EXEC = 'C:\\ProgramData\\chocolatey\\bin\\terraform.exe'
+        KIND_EXEC      = 'C:\\ProgramData\\chocolatey\\bin\\kind.exe'
     }
 
     stages {
@@ -37,16 +37,12 @@ pipeline {
         stage('Environment Check (Non Blocking)') {
             steps {
                 bat """
-                echo === ENV CHECK ===
-
-                "${GIT_EXEC}" --version
-                "${DOCKER_EXEC}" --version
-
-                ${KUBECTL_EXEC} version --client || echo kubectl NOT FOUND
-                ${TERRAFORM_EXEC} version || echo terraform NOT FOUND
-                ${KIND_EXEC} version || echo kind NOT FOUND
-
-                exit /b 0
+                    echo === ENV CHECK ===
+                    "${GIT_EXEC}" --version
+                    "${DOCKER_EXEC}" --version
+                    "${KUBECTL_EXEC}" version --client
+                    "${TERRAFORM_EXEC}" version
+                    "${KIND_EXEC}" version
                 """
             }
         }
@@ -55,8 +51,8 @@ pipeline {
             steps {
                 dir('infrastructure/Terraform') {
                     bat """
-                    ${TERRAFORM_EXEC} init
-                    ${TERRAFORM_EXEC} validate
+                        "${TERRAFORM_EXEC}" init -input=false
+                        "${TERRAFORM_EXEC}" validate
                     """
                 }
             }
@@ -65,10 +61,11 @@ pipeline {
         stage('Build Backend Image') {
             steps {
                 bat """
-                "${DOCKER_EXEC}" build ^
-                  -f backend/Dockerfile ^
-                  -t ${BACKEND_IMAGE}:latest ^
-                  -t ${BACKEND_IMAGE}:${IMAGE_TAG} .
+                    "${DOCKER_EXEC}" build ^
+                      -f backend/Dockerfile ^
+                      -t ${BACKEND_IMAGE}:latest ^
+                      -t ${BACKEND_IMAGE}:${IMAGE_TAG} ^
+                      .
                 """
             }
         }
@@ -76,30 +73,44 @@ pipeline {
         stage('Build Frontend Image') {
             steps {
                 bat """
-                "${DOCKER_EXEC}" build ^
-                  -f frontend/Dockerfile ^
-                  -t ${FRONTEND_IMAGE}:latest ^
-                  -t ${FRONTEND_IMAGE}:${IMAGE_TAG} .
+                    "${DOCKER_EXEC}" build ^
+                      -f frontend/Dockerfile ^
+                      -t ${FRONTEND_IMAGE}:latest ^
+                      -t ${FRONTEND_IMAGE}:${IMAGE_TAG} ^
+                      .
                 """
             }
         }
 
         stage('Create or Update Kind Cluster') {
             steps {
-                bat """
-                ${KIND_EXEC} get clusters | findstr ${CLUSTER_NAME} || ^
-                ${KIND_EXEC} create cluster --name ${CLUSTER_NAME} --config infrastructure/kind/cluster-config.yaml
+                script {
+                    def exists = bat(
+                        script: "\"${KIND_EXEC}\" get clusters | findstr ${CLUSTER_NAME}",
+                        returnStatus: true
+                    ) == 0
 
-                ${KIND_EXEC} export kubeconfig --name ${CLUSTER_NAME}
-                """
+                    if (!exists) {
+                        bat """
+                            "${KIND_EXEC}" create cluster ^
+                              --name ${CLUSTER_NAME} ^
+                              --config infrastructure\\kind\\cluster-config.yaml ^
+                              --wait 5m
+                        """
+                    } else {
+                        echo "Kind cluster already exists"
+                    }
+
+                    bat "\"${KIND_EXEC}\" export kubeconfig --name ${CLUSTER_NAME}"
+                }
             }
         }
 
         stage('Load Images to Kind') {
             steps {
                 bat """
-                ${KIND_EXEC} load docker-image ${BACKEND_IMAGE}:latest --name ${CLUSTER_NAME}
-                ${KIND_EXEC} load docker-image ${FRONTEND_IMAGE}:latest --name ${CLUSTER_NAME}
+                    "${KIND_EXEC}" load docker-image ${BACKEND_IMAGE}:latest --name ${CLUSTER_NAME}
+                    "${KIND_EXEC}" load docker-image ${FRONTEND_IMAGE}:latest --name ${CLUSTER_NAME}
                 """
             }
         }
@@ -108,19 +119,20 @@ pipeline {
             steps {
                 dir('infrastructure/Terraform') {
                     bat """
-                    ${TERRAFORM_EXEC} plan -out=tfplan
-                    ${TERRAFORM_EXEC} apply -auto-approve tfplan
+                        "${TERRAFORM_EXEC}" plan -out=tfplan
+                        "${TERRAFORM_EXEC}" apply -auto-approve tfplan
+                        "${TERRAFORM_EXEC}" output
                     """
                 }
             }
         }
 
-        stage('Wait for Deployments') {
+        stage('Wait for Pods') {
             steps {
                 bat """
-                ${KUBECTL_EXEC} wait --for=condition=ready pod -l app=redis --timeout=120s
-                ${KUBECTL_EXEC} wait --for=condition=ready pod -l app=backend --timeout=120s
-                ${KUBECTL_EXEC} wait --for=condition=ready pod -l app=frontend --timeout=120s
+                    "${KUBECTL_EXEC}" wait --for=condition=ready pod -l app=redis --timeout=120s
+                    "${KUBECTL_EXEC}" wait --for=condition=ready pod -l app=backend --timeout=120s
+                    "${KUBECTL_EXEC}" wait --for=condition=ready pod -l app=frontend --timeout=120s
                 """
             }
         }
@@ -128,9 +140,9 @@ pipeline {
         stage('Verify Deployment') {
             steps {
                 bat """
-                ${KUBECTL_EXEC} get pods -o wide
-                ${KUBECTL_EXEC} get services
-                ${KUBECTL_EXEC} logs -l app=backend --tail=20
+                    "${KUBECTL_EXEC}" get deployments
+                    "${KUBECTL_EXEC}" get services
+                    "${KUBECTL_EXEC}" get pods -o wide
                 """
             }
         }
@@ -139,15 +151,20 @@ pipeline {
     post {
         always {
             bat """
-            "${DOCKER_EXEC}" system prune -f || exit 0
+                "${DOCKER_EXEC}" system prune -f || exit 0
             """
         }
 
         failure {
             bat """
-            ${KUBECTL_EXEC} get pods > pod-status.log 2>&1 || exit 0
+                "${KUBECTL_EXEC}" get pods > pod-status.log 2>&1 || exit 0
+                "${KUBECTL_EXEC}" describe pods >> pod-status.log 2>&1 || exit 0
             """
             archiveArtifacts artifacts: '*.log', allowEmptyArchive: true
+        }
+
+        success {
+            echo "✅ PIPELINE SUCCESS"
         }
     }
 }
