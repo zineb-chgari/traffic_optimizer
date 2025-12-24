@@ -217,48 +217,42 @@ pipeline {
 
     post {
         always {
-            node {
-                echo "[INFO] Cleaning up"
-                bat """
-                    "${DOCKER_EXEC}" system prune -f || exit 0
-                    if exist infrastructure\\Terraform\\tfplan del infrastructure\\Terraform\\tfplan
-                """
-            }
+            echo "[INFO] Cleaning up"
+            bat """
+                "${DOCKER_EXEC}" system prune -f || exit 0
+                if exist infrastructure\\Terraform\\tfplan del infrastructure\\Terraform\\tfplan
+            """
         }
 
         success {
-            node {
-                echo "[SUCCESS] Pipeline completed successfully!"
-                script {
-                    try {
-                        def nodeIP = bat(
-                            script: 'kubectl get nodes -o jsonpath="{.items[0].status.addresses[?(@.type==\\"InternalIP\\")].address}"',
-                            returnStdout: true
-                        ).trim()
-                        currentBuild.description = """
-                            Build: ${BUILD_NUMBER}
-                            Commit: ${COMMIT_SHORT}
-                            Frontend: http://${nodeIP}:30001
-                            Backend: http://${nodeIP}:30002
-                        """
-                    } catch (Exception e) {
-                        echo "Could not set build description: ${e.message}"
-                    }
+            echo "[SUCCESS] Pipeline completed successfully!"
+            script {
+                try {
+                    def nodeIP = bat(
+                        script: 'kubectl get nodes -o jsonpath="{.items[0].status.addresses[?(@.type==\\"InternalIP\\")].address}"',
+                        returnStdout: true
+                    ).trim()
+                    currentBuild.description = """
+                        Build: ${BUILD_NUMBER}
+                        Commit: ${COMMIT_SHORT}
+                        Frontend: http://${nodeIP}:30001
+                        Backend: http://${nodeIP}:30002
+                    """
+                } catch (Exception e) {
+                    echo "Could not set build description: ${e.message}"
                 }
             }
         }
 
         failure {
-            node {
-                echo "[ERROR] Pipeline failed!"
-                bat """
-                    kubectl get pods > pod-status.log 2>&1 || exit 0
-                    kubectl describe pods >> pod-status.log 2>&1 || exit 0
-                    kubectl logs -l app=backend --tail=50 > backend-logs.log 2>&1 || exit 0
-                    kubectl logs -l app=frontend --tail=50 > frontend-logs.log 2>&1 || exit 0
-                """
-                archiveArtifacts artifacts: '*.log', allowEmptyArchive: true
-            }
+            echo "[ERROR] Pipeline failed!"
+            bat """
+                kubectl get pods > pod-status.log 2>&1 || exit 0
+                kubectl describe pods >> pod-status.log 2>&1 || exit 0
+                kubectl logs -l app=backend --tail=50 > backend-logs.log 2>&1 || exit 0
+                kubectl logs -l app=frontend --tail=50 > frontend-logs.log 2>&1 || exit 0
+            """
+            archiveArtifacts artifacts: '*.log', allowEmptyArchive: true
         }
     }
 }
