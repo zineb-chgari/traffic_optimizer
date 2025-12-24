@@ -1,30 +1,82 @@
-stage('Setup Kind Cluster') {
-    steps {
-        script {
-            timeout(time: 10, unit: 'MINUTES') {
-                echo "=== Setting up Kind Cluster ==="
+pipeline {
+    agent any
 
-                // Supprime l'ancien cluster si présent
+    environment {
+        // Docker
+        DOCKER_REG = '' // si tu as un registry, mets-le ici
+        BACKEND_IMAGE = 'transport-backend'
+        FRONTEND_IMAGE = 'transport-frontend'
+        IMAGE_TAG = "${BUILD_NUMBER}"
+
+        // Kubernetes / Kind
+        CLUSTER_NAME = 'k8s-terraform'
+        KUBECONFIG = "${WORKSPACE}/.kube/config"
+    }
+
+    stages {
+        stage('Setup Kind Cluster') {
+            steps {
+                echo "=== Setting up Kind Cluster ==="
                 bat """
                 kind delete cluster --name ${CLUSTER_NAME} 2>nul || echo No previous cluster
                 kubectl config delete-context kind-${CLUSTER_NAME} 2>nul || echo No previous context
+                kind create cluster --name ${CLUSTER_NAME} --wait 120s
+                kind export kubeconfig --name ${CLUSTER_NAME}
+                kubectl cluster-info --context kind-${CLUSTER_NAME}
                 """
-
-                // Tente de créer le cluster et capture la sortie
-                def createOutput = bat(script: "kind create cluster --name ${CLUSTER_NAME} --wait 120s", returnStdout: true).trim()
-                echo "Kind create cluster output:\n${createOutput}"
-
-                // Vérifie si le cluster est prêt
-                def kubectlOutput = bat(script: "kubectl cluster-info --context kind-${CLUSTER_NAME}", returnStatus: true)
-                if (kubectlOutput != 0) {
-                    error "❌ Kind cluster creation failed or kubectl cannot connect. Check Docker and kubeconfig!"
-                } else {
-                    echo "✅ Kind cluster is up and kubectl can connect"
-                }
-
-                // Export kubeconfig pour s'assurer que kubectl pointe sur le bon cluster
-                bat "kind export kubeconfig --name ${CLUSTER_NAME}"
             }
+        }
+
+        stage('Build Docker Images') {
+            steps {
+                echo "=== Building Backend Docker Image ==="
+                bat "docker build -t ${BACKEND_IMAGE}:${IMAGE_TAG} ./backend"
+                
+                echo "=== Building Frontend Docker Image ==="
+                bat "docker build -t ${FRONTEND_IMAGE}:${IMAGE_TAG} ./frontend"
+            }
+        }
+
+        stage('Push Docker Images (Optional)') {
+            steps {
+                echo "=== Pushing Docker Images to Registry ==="
+                // Si tu as un registry, décommente et configure
+                // bat "docker tag ${BACKEND_IMAGE}:${IMAGE_TAG} ${DOCKER_REG}/${BACKEND_IMAGE}:${IMAGE_TAG}"
+                // bat "docker push ${DOCKER_REG}/${BACKEND_IMAGE}:${IMAGE_TAG}"
+                // bat "docker tag ${FRONTEND_IMAGE}:${IMAGE_TAG} ${DOCKER_REG}/${FRONTEND_IMAGE}:${IMAGE_TAG}"
+                // bat "docker push ${DOCKER_REG}/${FRONTEND_IMAGE}:${IMAGE_TAG}"
+                echo "Push skipped (configure DOCKER_REG pour activer)"
+            }
+        }
+
+        stage('Deploy to Kubernetes') {
+            steps {
+                echo "=== Deploying to Kubernetes ==="
+                bat """
+                kubectl apply -f ./k8s/backend-deployment.yaml
+                kubectl apply -f ./k8s/frontend-deployment.yaml
+                kubectl get pods
+                """
+            }
+        }
+
+        stage('Cleanup') {
+            steps {
+                echo "=== Optional cleanup ==="
+                // bat "kind delete cluster --name ${CLUSTER_NAME}"
+            }
+        }
+    }
+
+    post {
+        always {
+            echo "Pipeline finished. Status: ${currentBuild.currentResult}"
+        }
+        failure {
+            echo "Pipeline failed. Check logs."
+        }
+        success {
+            echo "Pipeline succeeded!"
         }
     }
 }
