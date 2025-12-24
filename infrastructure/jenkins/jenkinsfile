@@ -1,188 +1,30 @@
-pipeline {
-    agent any
+stage('Setup Kind Cluster') {
+    steps {
+        script {
+            timeout(time: 10, unit: 'MINUTES') {
+                echo "=== Setting up Kind Cluster ==="
 
-    options {
-        timestamps()
-        buildDiscarder(logRotator(numToKeepStr: '10'))
-    }
-
-    environment {
-        PATH = "C:\\Program Files\\Docker\\Docker\\resources\\bin;C:\\ProgramData\\chocolatey\\bin;${env.PATH}"
-        BACKEND_IMAGE = "transport-backend"
-        FRONTEND_IMAGE = "transport-frontend"
-        IMAGE_TAG = "${BUILD_NUMBER}"
-        CLUSTER_NAME = "k8s-terraform"
-        // Chemin kubeconfig adaptable selon Jenkins user/service
-        KUBECONFIG = "${env.USERPROFILE ?: 'C:\\Windows\\System32\\config\\systemprofile'}\\.kube\\config"
-    }
-
-    stages {
-        stage('Checkout SCM') {
-            steps { checkout scm }
-        }
-
-        stage('Environment Check') {
-            steps {
-                script {
-                    echo '=== Validating Required Tools ==='
-                    def tools = [
-                        'docker': 'docker --version',
-                        'kubectl': 'kubectl version --client',
-                        'terraform': 'terraform version',
-                        'kind': 'kind version'
-                    ]
-                    tools.each { name, cmd ->
-                        if (bat(script: cmd, returnStatus: true) != 0) {
-                            error("${name} is not installed or not accessible in PATH")
-                        }
-                        echo "✓ ${name} found"
-                    }
-                }
-            }
-        }
-
-        stage('Validate Terraform') {
-            steps {
-                dir('infrastructure\\Terraform') {
-                    bat '''
-                    if exist terraform.tfstate del /f terraform.tfstate
-                    if exist terraform.tfstate.backup del /f terraform.tfstate.backup
-                    if exist .terraform\\terraform.tfstate del /f .terraform\\terraform.tfstate
-                    terraform init -reconfigure -input=false
-                    terraform validate
-                    '''
-                }
-            }
-        }
-
-        stage('Build Images') {
-            parallel {
-                stage('Build Backend') {
-                    steps { bat "docker build -f backend\\Dockerfile -t ${BACKEND_IMAGE}:latest -t ${BACKEND_IMAGE}:${IMAGE_TAG} backend" }
-                }
-                stage('Build Frontend') {
-                    steps { bat "docker build -f frontend\\Dockerfile -t ${FRONTEND_IMAGE}:latest -t ${FRONTEND_IMAGE}:${IMAGE_TAG} frontend" }
-                }
-            }
-        }
-
-        stage('Setup Kind Cluster') {
-            steps {
-                script {
-                    timeout(time: 10, unit: 'MINUTES') {
-                        def retryCount = 0
-                        def maxRetries = 2
-                        def clusterReady = false
-
-                        while (!clusterReady && retryCount <= maxRetries) {
-                            retryCount++
-                            echo "=== Setting up Kind Cluster (Attempt ${retryCount}) ==="
-
-                            // Supprimer cluster existant si nécessaire
-                            bat """
-                                kind delete cluster --name ${CLUSTER_NAME} 2>nul || exit 0
-                                kubectl config delete-context kind-${CLUSTER_NAME} 2>nul || exit 0
-                                kubectl config delete-cluster kind-${CLUSTER_NAME} 2>nul || exit 0
-                            """
-
-                            // Nettoyer conteneurs orphelins
-                            bat """
-                                @echo off
-                                for /f "tokens=*" %%i in ('docker ps -aq --filter "label=io.x-k8s.kind.cluster=${CLUSTER_NAME}" 2^>nul') do (
-                                    docker rm -f %%i 2>nul
-                                )
-                            """
-
-                            // Créer cluster
-                            if (bat(script: "kind create cluster --name ${CLUSTER_NAME} --wait 120s", returnStatus: true) == 0) {
-                                bat "kind export kubeconfig --name ${CLUSTER_NAME}"
-                                // Vérifier cluster
-                                clusterReady = (bat(script: "kubectl cluster-info --context kind-${CLUSTER_NAME}", returnStatus: true) == 0)
-                            }
-
-                            if (!clusterReady && retryCount <= maxRetries) {
-                                echo "⚠ Cluster setup failed, retrying..."
-                                sleep 10
-                            }
-                        }
-
-                        if (!clusterReady) { error("Failed to create a functional Kind cluster after ${maxRetries + 1} attempts") }
-                        echo "✓ Cluster ${CLUSTER_NAME} is ready"
-                    }
-                }
-            }
-        }
-
-        stage('Load Images to Kind') {
-            steps {
+                // Supprime l'ancien cluster si présent
                 bat """
-                    kind load docker-image %BACKEND_IMAGE%:latest --name %CLUSTER_NAME%
-                    kind load docker-image %FRONTEND_IMAGE%:latest --name %CLUSTER_NAME%
-                    echo ✓ Docker images loaded into Kind
+                kind delete cluster --name ${CLUSTER_NAME} 2>nul || echo No previous cluster
+                kubectl config delete-context kind-${CLUSTER_NAME} 2>nul || echo No previous context
                 """
-            }
-        }
 
-        stage('Deploy with Terraform') {
-            steps {
-                dir('infrastructure\\Terraform') {
-                    bat """
-                        kubectl config use-context kind-%CLUSTER_NAME%
-                        terraform init -reconfigure -input=false
-                        terraform apply -auto-approve -refresh=true
-                        echo ✓ Terraform deployment completed
-                    """
+                // Tente de créer le cluster et capture la sortie
+                def createOutput = bat(script: "kind create cluster --name ${CLUSTER_NAME} --wait 120s", returnStdout: true).trim()
+                echo "Kind create cluster output:\n${createOutput}"
+
+                // Vérifie si le cluster est prêt
+                def kubectlOutput = bat(script: "kubectl cluster-info --context kind-${CLUSTER_NAME}", returnStatus: true)
+                if (kubectlOutput != 0) {
+                    error "❌ Kind cluster creation failed or kubectl cannot connect. Check Docker and kubeconfig!"
+                } else {
+                    echo "✅ Kind cluster is up and kubectl can connect"
                 }
-            }
-        }
 
-        stage('Wait for Pods') {
-            steps {
-                script {
-                    timeout(time: 5, unit: 'MINUTES') {
-                        def components = ['redis', 'backend', 'frontend']
-                        components.each { comp ->
-                            echo "Waiting for ${comp} pods..."
-                            def status = bat(script: "kubectl wait --for=condition=Ready pod -l app=${comp} --timeout=180s", returnStatus: true)
-                            if (status != 0) { error("${comp} pods did not become ready in time") }
-                            echo "✓ ${comp} pods ready"
-                        }
-                    }
-                }
+                // Export kubeconfig pour s'assurer que kubectl pointe sur le bon cluster
+                bat "kind export kubeconfig --name ${CLUSTER_NAME}"
             }
-        }
-
-        stage('Verify Deployment') {
-            steps {
-                bat """
-                    echo === Deployment Status ===
-                    kubectl get pods -o wide
-                    kubectl get svc
-                    kubectl get deployments
-                """
-            }
-        }
-    }
-
-    post {
-        always { bat "docker system prune -f || exit 0" }
-        success {
-            echo """
-            ==========================================
-            ✓ DEPLOYMENT SUCCESSFUL
-            Frontend: http://localhost:30001
-            Backend:  http://localhost:30002
-            Cluster: ${CLUSTER_NAME}
-            ==========================================
-            """
-        }
-        failure {
-            bat """
-                echo ==========================================
-                echo ✗ DEPLOYMENT FAILED
-                kubectl get pods -A || echo Cannot retrieve pods
-                kubectl get events --sort-by=.metadata.creationTimestamp || echo Cannot retrieve events
-            """
         }
     }
 }
