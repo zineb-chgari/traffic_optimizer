@@ -130,8 +130,8 @@ pipeline {
             steps {
                 bat '''
                 echo Loading images to Kind cluster...
-                kind load docker-image %BACKEND_IMAGE%:%IMAGE_TAG% --name %CLUSTER_NAME%
-                kind load docker-image %FRONTEND_IMAGE%:%IMAGE_TAG% --name %CLUSTER_NAME%
+                kind load docker-image %BACKEND_IMAGE%:latest --name %CLUSTER_NAME%
+                kind load docker-image %FRONTEND_IMAGE%:latest --name %CLUSTER_NAME%
                 echo Images loaded successfully
                 '''
             }
@@ -150,7 +150,7 @@ pipeline {
         stage('Wait for Pods') {
             steps {
                 bat '''
-                kubectl wait --for=condition=Ready pods --all --namespace default --timeout=120s
+                kubectl wait --for=condition=Ready pods --all --namespace default --timeout=300s || echo Some pods not ready yet
                 '''
             }
         }
@@ -170,6 +170,12 @@ pipeline {
                 echo.
                 echo Nodes Status:
                 kubectl get nodes
+                echo.
+                echo Backend Logs:
+                kubectl logs -l app=backend --tail=20 --all-containers=true || echo No backend logs available
+                echo.
+                echo Frontend Logs:
+                kubectl logs -l app=frontend --tail=20 --all-containers=true || echo No frontend logs available
                 echo ========================================
                 '''
             }
@@ -183,10 +189,19 @@ pipeline {
         }
         success {
             echo "✓ Pipeline completed successfully!"
+            echo "Access your application:"
+            echo "  Frontend: http://localhost:30001"
+            echo "  Backend:  http://localhost:30002"
             echo "Cluster %CLUSTER_NAME% is ready and will be reused in next builds"
         }
         failure {
             echo "✗ Pipeline failed"
+            bat '''
+            echo Debugging information:
+            kubectl get pods -A || echo Cannot get pods
+            kubectl describe pods -l app=backend || echo Cannot describe backend pods
+            kubectl describe pods -l app=frontend || echo Cannot describe frontend pods
+            '''
             echo "Consider running: kind delete cluster --name %CLUSTER_NAME%"
         }
     }

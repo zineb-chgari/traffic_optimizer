@@ -8,8 +8,7 @@ terraform {
 }
 
 provider "kubernetes" {
-  config_path    = "~/.kube/config"
-  config_context = "kind-k8s-terraform"
+  config_path = "~/.kube/config"
 }
 
 # ==================== SECRETS ====================
@@ -193,7 +192,7 @@ resource "kubernetes_deployment_v1" "backend" {
             value_from {
               secret_key_ref {
                 name = kubernetes_secret_v1.api_keys.metadata[0].name
-                key  = W5O5wsCKcfiqwRYBe5vrGR7kFFETT8ls
+                key  = "tomtom_api_key"
               }
             }
           }
