@@ -15,7 +15,8 @@ pipeline {
         FRONTEND_IMAGE = "transport-frontend"
         IMAGE_TAG = "${BUILD_NUMBER}"
         CLUSTER_NAME = "k8s-terraform"
-        KUBECONFIG = "${WORKSPACE}\\.kube\\config"
+        // Utiliser le kubeconfig par défaut de l'utilisateur
+        KUBECONFIG = "${env.USERPROFILE}\\.kube\\config"
     }
 
     stages {
@@ -92,6 +93,10 @@ pipeline {
                     if (clusterHealthy) {
                         echo "✓ Cluster ${CLUSTER_NAME} is healthy, reusing it"
                         bat "kubectl config use-context kind-${CLUSTER_NAME}"
+                        
+                        // CRITIQUE : Forcer Terraform à utiliser le bon kubeconfig
+                        echo "Refreshing kubeconfig for Terraform..."
+                        bat "kind export kubeconfig --name ${CLUSTER_NAME}"
                         return
                     }
                     
@@ -113,9 +118,15 @@ pipeline {
                     if (clusterListed) {
                         echo "Cluster exists but is unhealthy, deleting..."
                         bat "kind delete cluster --name ${CLUSTER_NAME}"
-                        // Attendre un peu pour s'assurer de la suppression complète
                         bat "timeout /t 5 /nobreak >nul"
                     }
+                    
+                    // Nettoyer les contextes kubectl obsolètes
+                    echo "Cleaning stale kubectl contexts..."
+                    bat """
+                        kubectl config delete-context kind-${CLUSTER_NAME} 2>nul || exit 0
+                        kubectl config delete-cluster kind-${CLUSTER_NAME} 2>nul || exit 0
+                    """
                     
                     // Nettoyer les conteneurs orphelins Docker
                     echo "Cleaning any orphaned Docker containers..."
@@ -130,6 +141,10 @@ pipeline {
                     // Créer le cluster
                     echo "Creating new Kind cluster..."
                     bat "kind create cluster --name ${CLUSTER_NAME} --wait 120s"
+                    
+                    // Exporter le kubeconfig pour s'assurer que tout est à jour
+                    echo "Exporting fresh kubeconfig..."
+                    bat "kind export kubeconfig --name ${CLUSTER_NAME}"
                     
                     // Vérifier la création
                     def created = bat(
@@ -176,6 +191,14 @@ pipeline {
                     bat '''
                     echo === Deploying with Terraform ===
                     kubectl config use-context kind-%CLUSTER_NAME%
+                    
+                    echo Current kubectl context:
+                    kubectl config current-context
+                    
+                    echo Kubernetes API endpoint:
+                    kubectl config view --minify -o jsonpath="{.clusters[0].cluster.server}"
+                    echo.
+                    
                     terraform init -reconfigure -input=false
                     terraform apply -auto-approve -refresh=true
                     echo ✓ Terraform deployment completed
