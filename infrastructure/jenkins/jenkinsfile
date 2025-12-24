@@ -2,65 +2,79 @@ pipeline {
     agent any
 
     environment {
-        DOCKER_REG = ''
-        BACKEND_IMAGE = 'transport-backend'
-        FRONTEND_IMAGE = 'transport-frontend'
+        // Docker
+        DOCKER_PATH = "C:\\Program Files\\Docker\\Docker\\resources\\bin"
+        BACKEND_IMAGE = "transport-backend"
+        FRONTEND_IMAGE = "transport-frontend"
         IMAGE_TAG = "${BUILD_NUMBER}"
 
-        CLUSTER_NAME = 'k8s-terraform'
-        KUBECONFIG = "${WORKSPACE}/.kube/config"
-        KIND_PATH = 'C:\\ProgramData\\chocolatey\\bin\\kind.exe'
-        DOCKER_PATH = 'C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe'
-        TERRAFORM_PATH = 'C:\\ProgramData\\chocolatey\\bin\\terraform.exe'
-        KUBECTL_PATH = 'C:\\ProgramData\\chocolatey\\bin\\kubectl.exe'
+        // Kubernetes / Kind
+        CLUSTER_NAME = "k8s-terraform"
+        KUBECONFIG = "${WORKSPACE}\\.kube\\config"
+
+        // Terraform
+        TERRAFORM_PATH = "C:\\ProgramData\\chocolatey\\bin"
     }
 
     stages {
         stage('Checkout SCM') {
             steps {
-                checkout scm
+                checkout([$class: 'GitSCM',
+                    branches: [[name: '*/main']],
+                    userRemoteConfigs: [[url: 'https://github.com/zineb-chgari/traffic_optimizer.git']]
+                ])
             }
         }
 
         stage('Environment Check') {
             steps {
-                bat 'echo === ENV CHECK ==='
-                bat '"%DOCKER_PATH%" --version'
-                bat '"%KUBECTL_PATH%" version --client'
-                bat '"%TERRAFORM_PATH%" version'
-                bat '"%KIND_PATH%" version'
+                bat """
+                echo === ENV CHECK ===
+                docker --version
+                kubectl version --client
+                terraform version
+                kind version
+                """
             }
         }
 
         stage('Validate Terraform') {
             steps {
                 dir('infrastructure\\Terraform') {
-                    bat '"%TERRAFORM_PATH%" init -input=false'
-                    bat '"%TERRAFORM_PATH%" validate'
+                    bat """
+                    ${TERRAFORM_PATH}\\terraform.exe init -input=false
+                    ${TERRAFORM_PATH}\\terraform.exe validate
+                    """
                 }
             }
         }
 
         stage('Build Backend Image') {
             steps {
-                bat '"%DOCKER_PATH%" build -f backend\\Dockerfile -t %BACKEND_IMAGE%:latest -t %BACKEND_IMAGE%:%BUILD_NUMBER% backend'
+                bat """
+                set PATH=${DOCKER_PATH};%PATH%
+                docker build -f backend\\Dockerfile -t ${BACKEND_IMAGE}:latest -t ${BACKEND_IMAGE}:${BUILD_NUMBER} backend
+                """
             }
         }
 
         stage('Build Frontend Image') {
             steps {
-                bat '"%DOCKER_PATH%" build -f frontend\\Dockerfile -t %FRONTEND_IMAGE%:latest -t %FRONTEND_IMAGE%:%BUILD_NUMBER% frontend'
+                bat """
+                set PATH=${DOCKER_PATH};%PATH%
+                docker build -f frontend\\Dockerfile -t ${FRONTEND_IMAGE}:latest -t ${FRONTEND_IMAGE}:${BUILD_NUMBER} frontend
+                """
             }
         }
 
         stage('Create or Reuse Kind Cluster') {
             steps {
                 bat """
-                set PATH=%DOCKER_PATH%;%PATH%
-                ${KIND_PATH} get clusters | findstr /R /C:"^%CLUSTER_NAME%\$"
+                set PATH=${DOCKER_PATH};%PATH%
+                kind get clusters | findstr /R /C:"^%CLUSTER_NAME%\$"
                 if errorlevel 1 (
                     echo Cluster %CLUSTER_NAME% does not exist. Creating...
-                    ${KIND_PATH} create cluster --name %CLUSTER_NAME% --wait 60s
+                    kind create cluster --name %CLUSTER_NAME% --wait 60s
                 ) else (
                     echo Cluster %CLUSTER_NAME% already exists, reusing it
                 )
@@ -71,8 +85,9 @@ pipeline {
         stage('Load Images to Kind') {
             steps {
                 bat """
-                ${KIND_PATH} load docker-image %BACKEND_IMAGE%:%BUILD_NUMBER% --name %CLUSTER_NAME%
-                ${KIND_PATH} load docker-image %FRONTEND_IMAGE%:%BUILD_NUMBER% --name %CLUSTER_NAME%
+                set PATH=${DOCKER_PATH};%PATH%
+                kind load docker-image ${BACKEND_IMAGE}:${BUILD_NUMBER} --name %CLUSTER_NAME%
+                kind load docker-image ${FRONTEND_IMAGE}:${BUILD_NUMBER} --name %CLUSTER_NAME%
                 """
             }
         }
@@ -80,7 +95,9 @@ pipeline {
         stage('Deploy with Terraform') {
             steps {
                 dir('infrastructure\\Terraform') {
-                    bat '"%TERRAFORM_PATH%" apply -auto-approve'
+                    bat """
+                    ${TERRAFORM_PATH}\\terraform.exe apply -auto-approve
+                    """
                 }
             }
         }
@@ -88,22 +105,30 @@ pipeline {
         stage('Wait for Pods') {
             steps {
                 bat """
-                %KUBECTL_PATH% wait --for=condition=Ready pods --all --namespace=default --timeout=120s
+                set PATH=${DOCKER_PATH};%PATH%
+                kubectl wait --for=condition=Ready pods --all --namespace=default --timeout=120s
                 """
             }
         }
 
         stage('Verify Deployment') {
             steps {
-                bat '%KUBECTL_PATH% get pods -A'
+                bat """
+                set PATH=${DOCKER_PATH};%PATH%
+                kubectl get pods -o wide
+                kubectl get svc -o wide
+                """
             }
         }
     }
 
     post {
         always {
-            echo 'Cleaning up...'
-            bat '"%DOCKER_PATH%" system prune -f || exit 0'
+            echo "Cleaning up..."
+            bat """
+            set PATH=${DOCKER_PATH};%PATH%
+            docker system prune -f || exit 0
+            """
         }
     }
 }
