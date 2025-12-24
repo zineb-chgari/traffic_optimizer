@@ -12,9 +12,12 @@ pipeline {
         CLUSTER_NAME = 'k8s-terraform'
         KUBECONFIG = "${WORKSPACE}/.kube/config"
 
-        // Chemins
+        // Chemins - Adaptez selon votre installation
         GIT_EXEC = 'C:\\Program Files\\Git\\cmd\\git.exe'
         DOCKER_EXEC = 'C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe'
+        KUBECTL_EXEC = 'kubectl'  // Ou chemin complet si non dans PATH
+        TERRAFORM_EXEC = 'terraform'  // Ou chemin complet si non dans PATH
+        KIND_EXEC = 'kind'  // Ou chemin complet si non dans PATH
     }
 
     stages {
@@ -66,13 +69,13 @@ pipeline {
                     "${DOCKER_EXEC}" --version
 
                     echo Kubectl version:
-                    kubectl version --client
+                    ${KUBECTL_EXEC} version --client || echo "kubectl not found"
 
                     echo Terraform version:
-                    terraform version
+                    ${TERRAFORM_EXEC} version || echo "terraform not found"
 
                     echo Kind version:
-                    kind version
+                    ${KIND_EXEC} version || echo "kind not found"
                 """
             }
         }
