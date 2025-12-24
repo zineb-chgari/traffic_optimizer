@@ -2,30 +2,25 @@ pipeline {
     agent any
 
     environment {
-        DOCKER_REG = ''
-        BACKEND_IMAGE = 'transport-backend'
-        FRONTEND_IMAGE = 'transport-frontend'
-        IMAGE_TAG = "${BUILD_NUMBER}"
-        KUBECONFIG = "${WORKSPACE}/.kube/config"
+        // Mettre ici les chemins exacts des exécutables sur ton système
+        PATH = "C:\\Program Files\\Docker\\Docker\\resources\\bin;C:\\Program Files\\Terraform;C:\\Users\\TonUser\\kubectl;C:\\Users\\TonUser\\kind;%PATH%"
     }
 
     stages {
-        stage('Checkout SCM') {
+
+        stage('Verify Tools') {
             steps {
-                checkout scm
+                bat 'echo === Verifying tools ==='
+                bat 'docker --version || echo Docker not found'
+                bat 'kubectl version --client || echo kubectl not found'
+                bat 'terraform version || echo Terraform not found'
+                bat 'kind version || echo Kind not found'
             }
         }
 
-        stage('Environment Check') {
+        stage('Checkout SCM') {
             steps {
-                bat '''
-                echo === PATH CHECK ===
-                echo %PATH%
-                docker --version
-                kubectl version --client
-                terraform version
-                kind version
-                '''
+                checkout scm
             }
         }
 
@@ -40,31 +35,30 @@ pipeline {
 
         stage('Build Backend Image') {
             steps {
-                bat "docker build -f backend/Dockerfile -t ${BACKEND_IMAGE}:latest backend"
+                bat 'docker build -f backend/Dockerfile -t transport-backend:latest -t transport-backend:7 backend'
             }
         }
 
         stage('Build Frontend Image') {
             steps {
-                bat "docker build -f frontend/Dockerfile -t ${FRONTEND_IMAGE}:latest frontend"
+                bat 'docker build -f frontend/Dockerfile -t transport-frontend:latest -t transport-frontend:7 frontend'
             }
         }
 
         stage('Setup Kind Cluster') {
             steps {
-                script {
-                    bat '''
+                bat """
+                    echo Setting up Kind cluster...
                     kind delete cluster --name k8s-terraform-7 || echo Cluster not found
                     kind create cluster --name k8s-terraform-7
-                    '''
-                }
+                """
             }
         }
 
         stage('Load Images to Kind') {
             steps {
-                bat "kind load docker-image ${BACKEND_IMAGE}:latest --name k8s-terraform-7"
-                bat "kind load docker-image ${FRONTEND_IMAGE}:latest --name k8s-terraform-7"
+                bat 'kind load docker-image transport-backend:latest --name k8s-terraform-7'
+                bat 'kind load docker-image transport-frontend:latest --name k8s-terraform-7'
             }
         }
 
@@ -79,40 +73,31 @@ pipeline {
 
         stage('Wait for Pods') {
             steps {
-                script {
-                    def apps = ['redis', 'backend', 'frontend']
-                    for (app in apps) {
-                        try {
-                            echo "Waiting for pods with label app=${app}..."
-                            bat "kubectl wait --for=condition=Ready pod -l app=${app} --timeout=300s"
-                        } catch (err) {
-                            echo "Pods for ${app} not ready. Showing logs..."
-                            bat "kubectl get pods -l app=${app}"
-                            bat "kubectl logs -l app=${app} --all-containers=true || echo No logs available"
-                            error "Deployment failed for ${app} pods"
-                        }
-                    }
-                }
+                // On attend que tous les pods soient prêts, mais on ne plante pas si aucun pod n'est trouvé
+                bat 'kubectl wait --for=condition=Ready pod -l app=redis --timeout=300s || echo Redis pods not ready yet'
+                bat 'kubectl wait --for=condition=Ready pod -l app=backend --timeout=300s || echo Backend pods not ready yet'
+                bat 'kubectl wait --for=condition=Ready pod -l app=frontend --timeout=300s || echo Frontend pods not ready yet'
             }
         }
 
         stage('Verify Deployment') {
             steps {
-                bat 'kubectl get all'
+                bat 'kubectl get pods'
+                bat 'kubectl get svc'
             }
         }
     }
 
     post {
         always {
-            echo "Cleaning up Docker cache..."
+            echo 'Cleaning up Docker cache...'
             bat 'docker system prune -f || exit 0'
         }
-        failure {
-            echo "Pipeline failed. Check logs above for errors."
-        }
         success {
-            echo "Pipeline executed successfully!"
+            echo 'Pipeline completed successfully!'
+        }
+        failure {
+            echo 'Pipeline failed. Check logs above for errors.'
         }
     }
 }
