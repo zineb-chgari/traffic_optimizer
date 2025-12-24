@@ -2,6 +2,8 @@ pipeline {
     agent any
     
     environment {
+        // Configuration du PATH avec tous les outils nécessaires
+        PATH = "C:\\Program Files\\Docker\\Docker\\resources\\bin;C:\\ProgramData\\chocolatey\\bin;${env.PATH}"
         CLUSTER_NAME = 'k8s-terraform'
         BUILD_TAG = "${BUILD_NUMBER}"
     }
@@ -21,12 +23,18 @@ pipeline {
         stage('Environment Check') {
             steps {
                 bat '''
-                    echo === PATH CHECK ===
-                    echo %PATH%
-                    docker --version || echo Docker not found
-                    kubectl version --client || echo kubectl not found
-                    terraform version || echo Terraform not found
-                    kind version || echo Kind not found
+                    echo ==========================================
+                    echo === ENVIRONMENT CHECK ===
+                    echo ==========================================
+                    echo PATH: %PATH%
+                    echo.
+                    echo Checking tools...
+                    docker --version
+                    kubectl version --client
+                    terraform version
+                    kind version
+                    echo.
+                    echo All tools found successfully!
                 '''
             }
         }
@@ -63,6 +71,7 @@ pipeline {
                     retry(2) {
                         timeout(time: 10, unit: 'MINUTES') {
                             bat """
+                                echo Building backend image...
                                 docker build -f backend\\Dockerfile ^
                                     -t transport-backend:latest ^
                                     -t transport-backend:${BUILD_TAG} ^
@@ -80,6 +89,7 @@ pipeline {
                     retry(2) {
                         timeout(time: 10, unit: 'MINUTES') {
                             bat """
+                                echo Building frontend image...
                                 docker build -f frontend\\Dockerfile ^
                                     -t transport-frontend:latest ^
                                     -t transport-frontend:${BUILD_TAG} ^
@@ -93,22 +103,25 @@ pipeline {
         
         stage('Setup Kind Cluster') {
             steps {
-                script {
-                    bat """
-                        kind get clusters | findstr ${CLUSTER_NAME} && (
-                            echo Cluster exists
-                        ) || (
-                            echo Creating cluster...
-                            kind create cluster --name ${CLUSTER_NAME}
-                        )
-                    """
-                }
+                bat """
+                    echo Checking for existing cluster...
+                    kind get clusters 2>nul | findstr ${CLUSTER_NAME} && (
+                        echo Cluster ${CLUSTER_NAME} already exists
+                    ) || (
+                        echo Creating new cluster ${CLUSTER_NAME}...
+                        kind create cluster --name ${CLUSTER_NAME}
+                    )
+                    
+                    echo Setting kubectl context...
+                    kubectl config use-context kind-${CLUSTER_NAME}
+                """
             }
         }
         
         stage('Verify Cluster Connection') {
             steps {
                 bat '''
+                    echo Verifying cluster connection...
                     kubectl cluster-info
                     kubectl get nodes
                 '''
@@ -117,51 +130,58 @@ pipeline {
         
         stage('Load Images to Kind') {
             steps {
-                script {
-                    bat """
-                        echo Loading images into Kind cluster...
-                        kind load docker-image transport-backend:latest --name ${CLUSTER_NAME}
-                        kind load docker-image transport-frontend:latest --name ${CLUSTER_NAME}
-                        
-                        echo Verifying images on nodes...
-                        docker exec ${CLUSTER_NAME}-control-plane crisp images | findstr transport || echo Images loaded
-                    """
-                }
+                bat """
+                    echo Loading images into Kind cluster...
+                    kind load docker-image transport-backend:latest --name ${CLUSTER_NAME}
+                    kind load docker-image transport-frontend:latest --name ${CLUSTER_NAME}
+                    
+                    echo Verifying images are loaded...
+                    docker exec ${CLUSTER_NAME}-control-plane crictl images | findstr transport
+                """
             }
         }
         
         stage('Deploy with Terraform') {
             steps {
                 dir('infrastructure/Terraform') {
-                    script {
-                        bat '''
-                            echo Cleaning Terraform state if needed...
-                            terraform state rm kubernetes_deployment_v1.backend 2>nul || echo No backend state
-                            terraform state rm kubernetes_deployment_v1.frontend 2>nul || echo No frontend state
-                            
-                            echo Importing existing resources...
-                            kubectl get deployment backend && terraform import kubernetes_deployment_v1.backend default/backend || echo No backend to import
-                            kubectl get deployment frontend && terraform import kubernetes_deployment_v1.frontend default/frontend || echo No frontend to import
-                            
-                            echo Applying Terraform...
-                            terraform apply -auto-approve
-                        '''
-                    }
+                    bat '''
+                        echo Cleaning potential state issues...
+                        terraform state rm kubernetes_deployment_v1.backend 2>nul || echo No backend state to remove
+                        terraform state rm kubernetes_deployment_v1.frontend 2>nul || echo No frontend state to remove
+                        
+                        echo Checking for existing deployments...
+                        kubectl get deployment backend 2>nul && (
+                            echo Importing existing backend deployment...
+                            terraform import kubernetes_deployment_v1.backend default/backend
+                        ) || echo No backend deployment to import
+                        
+                        kubectl get deployment frontend 2>nul && (
+                            echo Importing existing frontend deployment...
+                            terraform import kubernetes_deployment_v1.frontend default/frontend
+                        ) || echo No frontend deployment to import
+                        
+                        echo Applying Terraform configuration...
+                        terraform apply -auto-approve
+                    '''
                 }
             }
         }
         
         stage('Wait for Pods') {
             steps {
-                script {
-                    timeout(time: 5, unit: 'MINUTES') {
-                        bat '''
-                            echo Waiting for pods to be ready...
-                            kubectl wait --for=condition=ready pod -l app=backend --timeout=300s || echo Backend pods not ready
-                            kubectl wait --for=condition=ready pod -l app=frontend --timeout=300s || echo Frontend pods not ready
-                            kubectl wait --for=condition=ready pod -l app=redis --timeout=300s || echo Redis pod not ready
-                        '''
-                    }
+                timeout(time: 5, unit: 'MINUTES') {
+                    bat '''
+                        echo Waiting for pods to be ready...
+                        
+                        echo Waiting for backend pods...
+                        kubectl wait --for=condition=ready pod -l app=backend --timeout=300s || echo Backend pods not ready yet
+                        
+                        echo Waiting for frontend pods...
+                        kubectl wait --for=condition=ready pod -l app=frontend --timeout=300s || echo Frontend pods not ready yet
+                        
+                        echo Waiting for redis pod...
+                        kubectl wait --for=condition=ready pod -l app=redis --timeout=300s || echo Redis pod not ready yet
+                    '''
                 }
             }
         }
@@ -169,14 +189,33 @@ pipeline {
         stage('Verify Deployment') {
             steps {
                 bat '''
-                    echo === Final Status ===
+                    echo ==========================================
+                    echo === DEPLOYMENT STATUS ===
+                    echo ==========================================
+                    
+                    echo.
+                    echo === Pods ===
                     kubectl get pods -o wide
+                    
+                    echo.
+                    echo === Services ===
                     kubectl get svc
+                    
+                    echo.
+                    echo === Deployments ===
                     kubectl get deployment
                     
-                    echo === Checking pod logs ===
-                    kubectl logs -l app=backend --tail=20 --all-containers=true || echo No backend logs
-                    kubectl logs -l app=frontend --tail=20 --all-containers=true || echo No frontend logs
+                    echo.
+                    echo === Backend Logs (last 10 lines) ===
+                    kubectl logs -l app=backend --tail=10 --all-containers=true || echo No backend logs available
+                    
+                    echo.
+                    echo === Frontend Logs (last 10 lines) ===
+                    kubectl logs -l app=frontend --tail=10 --all-containers=true || echo No frontend logs available
+                    
+                    echo.
+                    echo === Redis Logs (last 10 lines) ===
+                    kubectl logs -l app=redis --tail=10 || echo No redis logs available
                 '''
             }
         }
@@ -190,21 +229,29 @@ pipeline {
         
         success {
             echo '=========================================='
-            echo '✓ Pipeline succeeded'
+            echo '✓ PIPELINE SUCCEEDED'
             echo '=========================================='
             bat '''
-                echo Access your application:
+                echo.
+                echo === ACCESS YOUR APPLICATION ===
+                echo.
                 echo Frontend: kubectl port-forward service/frontend-service 8080:80
-                echo Backend: kubectl port-forward service/backend-service 3000:3000
+                echo Backend:  kubectl port-forward service/backend-service 3000:3000
+                echo.
+                echo Or access via NodePort:
+                echo Frontend: http://localhost:30001
+                echo Backend:  http://localhost:30002
+                echo.
             '''
         }
         
         failure {
             echo '=========================================='
-            echo '✗ Pipeline failed'
+            echo '✗ PIPELINE FAILED'
             echo '=========================================='
             bat '''
-                echo --- Debugging Information ---
+                echo.
+                echo === DEBUGGING INFORMATION ===
                 echo.
                 echo Current Context:
                 kubectl config current-context || echo Cannot get context
@@ -215,8 +262,11 @@ pipeline {
                 echo All Pods:
                 kubectl get pods --all-namespaces || echo Cannot get pods
                 echo.
-                echo Events:
-                kubectl get events --sort-by=.metadata.creationTimestamp --all-namespaces || echo Cannot get events
+                echo Recent Events:
+                kubectl get events --sort-by=.metadata.creationTimestamp --all-namespaces | findstr /V "Normal" || echo Cannot get events
+                echo.
+                echo Docker Images:
+                docker images | findstr transport
             '''
         }
     }
