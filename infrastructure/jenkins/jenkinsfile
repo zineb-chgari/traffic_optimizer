@@ -33,37 +33,91 @@ pipeline {
             }
         }
 
+        stage('Validate Terraform') {
+            steps {
+                dir('infrastructure\\Terraform') {
+                    bat '''
+                    terraform init -input=false
+                    terraform validate
+                    '''
+                }
+            }
+        }
+
+        stage('Build Backend Image') {
+            steps {
+                bat '''
+                docker build -f backend\\Dockerfile -t %BACKEND_IMAGE%:latest -t %BACKEND_IMAGE%:%IMAGE_TAG% backend
+                '''
+            }
+        }
+
+        stage('Build Frontend Image') {
+            steps {
+                bat '''
+                docker build -f frontend\\Dockerfile -t %FRONTEND_IMAGE%:latest -t %FRONTEND_IMAGE%:%IMAGE_TAG% frontend
+                '''
+            }
+        }
+
         stage('Setup Kind Cluster') {
             steps {
                 bat '''
+                @echo off
                 echo ========================================
                 echo Checking Kind cluster status...
                 echo ========================================
-                
+
                 REM Vérifier si le cluster existe
-                kind get clusters | findstr /R /C:"^%CLUSTER_NAME%$" >nul 2>&1
+                kind get clusters 2>nul | findstr /R /C:"^%CLUSTER_NAME%$" >nul 2>&1
+
                 if errorlevel 1 (
-                    echo [INFO] Cluster not found. Creating...
-                    kind create cluster --name %CLUSTER_NAME% --config kind-config.yaml --wait 120s
+                    echo [INFO] Cluster not found, creating...
+                    kind create cluster --name %CLUSTER_NAME% --wait 120s
+                    if errorlevel 1 (
+                        echo [ERROR] Failed to create cluster
+                        exit /b 1
+                    )
+                    echo [SUCCESS] Cluster created
                 ) else (
-                    echo [INFO] Cluster exists, reusing...
+                    echo [INFO] Cluster exists, verifying health...
+                    kubectl cluster-info --context kind-%CLUSTER_NAME% >nul 2>&1
+                    if errorlevel 1 (
+                        echo [WARNING] Cluster exists but unhealthy, recreating...
+                        kind delete cluster --name %CLUSTER_NAME%
+                        kind create cluster --name %CLUSTER_NAME% --wait 120s
+                        echo [SUCCESS] Cluster recreated
+                    ) else (
+                        echo [SUCCESS] Cluster is healthy
+                    )
                 )
-                
-                REM Générer le kubeconfig dans le workspace Jenkins
-                kind get kubeconfig --name %CLUSTER_NAME% > %KUBECONFIG%
-                
-                echo ========================================
-                echo Kind cluster setup completed
                 echo ========================================
                 '''
             }
         }
 
-        stage('Build Docker Images') {
+        stage('Verify Cluster Connection') {
             steps {
                 bat '''
-                docker build -f backend\\Dockerfile -t %BACKEND_IMAGE%:latest -t %BACKEND_IMAGE%:%IMAGE_TAG% backend
-                docker build -f frontend\\Dockerfile -t %FRONTEND_IMAGE%:latest -t %FRONTEND_IMAGE%:%IMAGE_TAG% frontend
+                @echo off
+                echo ========================================
+                echo Verifying Kubernetes cluster connection...
+                echo ========================================
+                
+                set KUBECONFIG=%WORKSPACE%\\.kube\\config
+
+                echo Current context:
+                kubectl config current-context
+
+                echo Kubernetes API endpoint:
+                kubectl config view --minify -o jsonpath="{.clusters[0].cluster.server}"
+
+                echo Waiting for nodes to be ready...
+                kubectl wait --for=condition=Ready nodes --all --timeout=180s
+
+                echo Current nodes status:
+                kubectl get nodes
+                echo ========================================
                 '''
             }
         }
@@ -71,59 +125,113 @@ pipeline {
         stage('Load Images to Kind') {
             steps {
                 bat '''
+                echo ========================================
+                echo Loading images to Kind cluster...
+                echo ========================================
                 kind load docker-image %BACKEND_IMAGE%:latest --name %CLUSTER_NAME%
                 kind load docker-image %FRONTEND_IMAGE%:latest --name %CLUSTER_NAME%
+                echo ========================================
+                echo Images loaded successfully
+                echo ========================================
                 '''
             }
         }
 
-        stage('Terraform Deploy') {
+        stage('Deploy with Terraform') {
             steps {
                 dir('infrastructure\\Terraform') {
                     bat '''
+                    @echo off
                     echo ========================================
-                    echo Deploying Kubernetes resources with Terraform
+                    echo Deploying with Terraform...
                     echo ========================================
 
-                    REM Utiliser le kubeconfig généré
+                    REM Assurer que Terraform utilise le kubeconfig du workspace Jenkins
                     set KUBECONFIG=%WORKSPACE%\\.kube\\config
 
-                    terraform init -input=false
+                    echo Current kubectl context:
+                    kubectl config current-context
+
+                    echo Kubernetes API endpoint:
+                    kubectl config view --minify -o jsonpath="{.clusters[0].cluster.server}"
+                    echo.
+
                     terraform apply -auto-approve
+
+                    echo ========================================
+                    echo Terraform deployment completed
+                    echo ========================================
                     '''
                 }
             }
         }
 
-        stage('Verify Pods') {
+        stage('Wait for Pods') {
             steps {
                 bat '''
+                @echo off
                 echo ========================================
                 echo Waiting for pods to be ready...
                 echo ========================================
                 
                 set KUBECONFIG=%WORKSPACE%\\.kube\\config
 
-                REM Attendre que Redis, Backend et Frontend soient prêts
-                kubectl wait --for=condition=Ready pod -l app=redis --timeout=180s
-                kubectl wait --for=condition=Ready pod -l app=backend --timeout=180s
-                kubectl wait --for=condition=Ready pod -l app=frontend --timeout=180s
+                timeout /t 10 /nobreak >nul
+
+                echo Waiting for Redis pods...
+                kubectl wait --for=condition=Ready pod -l app=redis --timeout=300s || echo Redis pods not ready yet
+
+                echo Waiting for Backend pods...
+                kubectl wait --for=condition=Ready pod -l app=backend --timeout=300s || echo Backend pods not ready yet
+
+                echo Waiting for Frontend pods...
+                kubectl wait --for=condition=Ready pod -l app=frontend --timeout=300s || echo Frontend pods not ready yet
 
                 echo ========================================
-                echo Pods status:
-                kubectl get pods -A
+                echo Pod readiness check completed
                 echo ========================================
                 '''
             }
         }
 
-        stage('Verify Cluster & Services') {
+        stage('Verify Deployment') {
             steps {
                 bat '''
+                @echo off
+                echo ========================================
+                echo Deployment Verification
+                echo ========================================
+
                 set KUBECONFIG=%WORKSPACE%\\.kube\\config
+
+                echo --- All Pods Status ---
+                kubectl get pods -A
+
+                echo --- Services Status ---
                 kubectl get svc -A
+
+                echo --- Nodes Status ---
                 kubectl get nodes
-                kubectl cluster-info
+
+                echo --- Backend Pod Details ---
+                kubectl describe pods -l app=backend || echo No backend pods found
+
+                echo --- Frontend Pod Details ---
+                kubectl describe pods -l app=frontend || echo No frontend pods found
+
+                echo --- Redis Pod Details ---
+                kubectl describe pods -l app=redis || echo No redis pods found
+
+                echo --- Backend Logs (last 20 lines) ---
+                kubectl logs -l app=backend --tail=20 --all-containers=true || echo No backend logs available
+
+                echo --- Frontend Logs (last 20 lines) ---
+                kubectl logs -l app=frontend --tail=20 --all-containers=true || echo No frontend logs available
+
+                echo --- Redis Logs (last 20 lines) ---
+                kubectl logs -l app=redis --tail=20 --all-containers=true || echo No redis logs available
+
+                echo ========================================
                 '''
             }
         }
@@ -131,22 +239,54 @@ pipeline {
 
     post {
         always {
-            echo "Pipeline finished"
+            echo "Pipeline execution completed"
+            bat "docker system prune -f || exit 0"
         }
         success {
-            echo "Pipeline completed successfully! Your apps should be accessible."
-            echo "Frontend NodePort: 30001"
-            echo "Backend NodePort: 30002"
+            echo "=========================================="
+            echo "✓ Pipeline completed successfully!"
+            echo "=========================================="
+            echo "Access your application:"
+            echo "  Frontend: http://localhost:30001"
+            echo "  Backend:  http://localhost:30002"
+            echo "Useful commands:"
+            echo "  kubectl get pods"
+            echo "  kubectl get svc"
+            echo "  kubectl logs -l app=backend"
+            echo "  kubectl logs -l app=frontend"
+            echo "Cluster %CLUSTER_NAME% is ready and will be reused in next builds"
         }
         failure {
-            echo "Pipeline failed. Debug info:"
+            echo "=========================================="
+            echo "✗ Pipeline failed"
+            echo "=========================================="
             bat '''
+            @echo off
             set KUBECONFIG=%WORKSPACE%\\.kube\\config
-            kubectl get pods -A
-            kubectl get svc -A
-            kubectl describe pods -l app=backend
-            kubectl describe pods -l app=frontend
-            kubectl describe pods -l app=redis
+
+            echo Current Context:
+            kubectl config current-context || echo Cannot get context
+
+            echo Cluster Info:
+            kubectl cluster-info || echo Cannot get cluster info
+
+            echo All Pods in all namespaces:
+            kubectl get pods -A || echo Cannot get pods
+
+            echo Default namespace pods details:
+            kubectl get pods -o wide || echo Cannot get pods details
+
+            echo Backend pod description:
+            kubectl describe pods -l app=backend || echo Cannot describe backend pods
+
+            echo Frontend pod description:
+            kubectl describe pods -l app=frontend || echo Cannot describe frontend pods
+
+            echo Redis pod description:
+            kubectl describe pods -l app=redis || echo Cannot describe redis pods
+
+            echo Events:
+            kubectl get events --sort-by=.metadata.creationTimestamp || echo Cannot get events
             '''
         }
     }
