@@ -15,24 +15,37 @@ pipeline {
         // Chemins
         GIT_EXEC = 'C:\\Program Files\\Git\\cmd\\git.exe'
         DOCKER_EXEC = 'C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe'
-
-        // API Keys
-        ORS_API_KEY = credentials('ors-api-key')
-        TOMTOM_API_KEY = credentials('tomtom-api-key')
     }
 
     stages {
+        stage('Setup Credentials') {
+            steps {
+                script {
+                    // Charger les credentials si ils existent
+                    try {
+                        withCredentials([
+                            string(credentialsId: 'ors-api-key', variable: 'ORS_KEY'),
+                            string(credentialsId: 'tomtom-api-key', variable: 'TOMTOM_KEY')
+                        ]) {
+                            env.ORS_API_KEY = env.ORS_KEY
+                            env.TOMTOM_API_KEY = env.TOMTOM_KEY
+                            echo "Credentials loaded successfully"
+                        }
+                    } catch (Exception e) {
+                        echo "Warning: Could not load credentials: ${e.message}"
+                        echo "Using default values"
+                        env.ORS_API_KEY = "eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6IjIwNjAxYzVlZmFlNjQ1OGZiOTY3ODUxNDg3NTY2MjBlIiwiaCI6Im11cm11cjY0In0="
+                        env.TOMTOM_API_KEY = "YOUR_TOMTOM_API_KEY"
+                    }
+                }
+            }
+        }
+
         stage('Checkout SCM') {
             steps {
                 echo "[INFO] Checking out code from Git"
                 script {
-                    bat """
-                        if exist .git (
-                            "${GIT_EXEC}" pull origin main
-                        ) else (
-                            "${GIT_EXEC}" clone https://github.com/zineb-chgari/traffic_optimizer.git .
-                        )
-                    """
+                    checkout scm
                     env.COMMIT_SHORT = bat(
                         script: "\"${GIT_EXEC}\" rev-parse --short HEAD",
                         returnStdout: true
@@ -107,7 +120,7 @@ pipeline {
                 echo "[INFO] Managing Kind cluster"
                 script {
                     def clusterExists = bat(
-                        script: "kind get clusters | findstr ${CLUSTER_NAME}",
+                        script: "kind get clusters 2>nul | findstr ${CLUSTER_NAME}",
                         returnStatus: true
                     ) == 0
 
@@ -217,27 +230,28 @@ pipeline {
 
     post {
         always {
-            echo "[INFO] Cleaning up"
-            bat """
-                "${DOCKER_EXEC}" system prune -f || exit 0
-                if exist infrastructure\\Terraform\\tfplan del infrastructure\\Terraform\\tfplan
-            """
+            script {
+                try {
+                    echo "[INFO] Cleaning up"
+                    bat """
+                        "${env.DOCKER_EXEC}" system prune -f || exit 0
+                        if exist infrastructure\\Terraform\\tfplan del infrastructure\\Terraform\\tfplan
+                    """
+                } catch (Exception e) {
+                    echo "Cleanup failed: ${e.message}"
+                }
+            }
         }
 
         success {
-            echo "[SUCCESS] Pipeline completed successfully!"
             script {
+                echo "[SUCCESS] Pipeline completed successfully!"
                 try {
                     def nodeIP = bat(
                         script: 'kubectl get nodes -o jsonpath="{.items[0].status.addresses[?(@.type==\\"InternalIP\\")].address}"',
                         returnStdout: true
                     ).trim()
-                    currentBuild.description = """
-                        Build: ${BUILD_NUMBER}
-                        Commit: ${COMMIT_SHORT}
-                        Frontend: http://${nodeIP}:30001
-                        Backend: http://${nodeIP}:30002
-                    """
+                    currentBuild.description = "Build: ${BUILD_NUMBER} | Commit: ${env.COMMIT_SHORT} | Frontend: http://${nodeIP}:30001"
                 } catch (Exception e) {
                     echo "Could not set build description: ${e.message}"
                 }
@@ -245,14 +259,20 @@ pipeline {
         }
 
         failure {
-            echo "[ERROR] Pipeline failed!"
-            bat """
-                kubectl get pods > pod-status.log 2>&1 || exit 0
-                kubectl describe pods >> pod-status.log 2>&1 || exit 0
-                kubectl logs -l app=backend --tail=50 > backend-logs.log 2>&1 || exit 0
-                kubectl logs -l app=frontend --tail=50 > frontend-logs.log 2>&1 || exit 0
-            """
-            archiveArtifacts artifacts: '*.log', allowEmptyArchive: true
+            script {
+                echo "[ERROR] Pipeline failed!"
+                try {
+                    bat """
+                        kubectl get pods > pod-status.log 2>&1 || exit 0
+                        kubectl describe pods >> pod-status.log 2>&1 || exit 0
+                        kubectl logs -l app=backend --tail=50 > backend-logs.log 2>&1 || exit 0
+                        kubectl logs -l app=frontend --tail=50 > frontend-logs.log 2>&1 || exit 0
+                    """
+                    archiveArtifacts artifacts: '*.log', allowEmptyArchive: true
+                } catch (Exception e) {
+                    echo "Could not collect failure logs: ${e.message}"
+                }
+            }
         }
     }
 }
