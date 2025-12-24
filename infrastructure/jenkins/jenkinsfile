@@ -2,140 +2,114 @@ pipeline {
     agent any
 
     environment {
-        // Versions / tags
-        BACKEND_IMAGE  = "transport-backend"
-        FRONTEND_IMAGE = "transport-frontend"
-        IMAGE_TAG      = "${BUILD_NUMBER}"
+        // Docker
+        DOCKER_REG = ''
+        BACKEND_IMAGE = 'transport-backend'
+        FRONTEND_IMAGE = 'transport-frontend'
+        IMAGE_TAG = "${BUILD_NUMBER}"
 
-        // Tools (paths Windows Jenkins)
-        DOCKER     = "C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe"
-        KUBECTL    = "C:\\ProgramData\\chocolatey\\bin\\kubectl.exe"
-        TERRAFORM  = "C:\\ProgramData\\chocolatey\\bin\\terraform.exe"
-        KIND       = "C:\\ProgramData\\chocolatey\\bin\\kind.exe"
-        GIT        = "C:\\Program Files\\Git\\cmd\\git.exe"
+        // Kubernetes / Kind
+        CLUSTER_NAME = 'traffic-cluster'
+        KUBECONFIG = "${WORKSPACE}/.kube/config"
+        DOCKER_BIN = 'C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe' // chemin explicite pour Kind
     }
 
     stages {
-
-        /* ========================================================= */
         stage('Checkout SCM') {
             steps {
                 checkout scm
-                bat """
-                    "${GIT}" rev-parse --short HEAD
-                """
             }
         }
 
-        /* ========================================================= */
         stage('Environment Check (Non Blocking)') {
             steps {
-                bat """
-                    echo === ENV CHECK ===
-                    "${GIT}" --version
-                    "${DOCKER}" --version
-                    "${KUBECTL}" version --client
-                    "${TERRAFORM}" version
-                    "${KIND}" version
-                """
+                bat 'echo === ENV CHECK ==='
+                bat '"C:\\Program Files\\Git\\cmd\\git.exe" --version'
+                bat '"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe" --version'
+                bat '"C:\\ProgramData\\chocolatey\\bin\\kubectl.exe" version --client'
+                bat '"C:\\ProgramData\\chocolatey\\bin\\terraform.exe" version'
+                bat '"C:\\ProgramData\\chocolatey\\bin\\kind.exe" version'
             }
         }
 
-        /* ========================================================= */
         stage('Validate Terraform') {
             steps {
                 dir('infrastructure/Terraform') {
-                    bat """
-                        "${TERRAFORM}" init -input=false
-                        "${TERRAFORM}" validate
-                    """
+                    bat '"C:\\ProgramData\\chocolatey\\bin\\terraform.exe" init -input=false'
+                    bat '"C:\\ProgramData\\chocolatey\\bin\\terraform.exe" validate'
                 }
             }
         }
 
-        /* ========================================================= */
         stage('Build Backend Image') {
             steps {
-                bat """
-                    "${DOCKER}" build ^
-                        -f backend/Dockerfile ^
-                        -t %BACKEND_IMAGE%:latest ^
-                        -t %BACKEND_IMAGE%:%IMAGE_TAG% ^
-                        backend
-                """
+                bat '"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe" build -f backend/Dockerfile -t transport-backend:latest -t transport-backend:${BUILD_NUMBER} backend'
             }
         }
 
-        /* ========================================================= */
         stage('Build Frontend Image') {
             steps {
-                bat """
-                    "${DOCKER}" build ^
-                        -f frontend/Dockerfile ^
-                        -t %FRONTEND_IMAGE%:latest ^
-                        -t %FRONTEND_IMAGE%:%IMAGE_TAG% ^
-                        frontend
-                """
+                bat '"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe" build -f frontend/Dockerfile -t transport-frontend:latest -t transport-frontend:${BUILD_NUMBER} frontend'
             }
         }
 
-        /* ========================================================= */
         stage('Create or Update Kind Cluster') {
             steps {
-                bat """
-                    "${KIND}" get clusters | findstr traffic-cluster || ^
-                    "${KIND}" create cluster --name traffic-cluster
-                """
+                script {
+                    // Vérifie si le cluster existe
+                    def clusterExists = bat(script: '"C:\\ProgramData\\chocolatey\\bin\\kind.exe" get clusters | findstr %CLUSTER_NAME%', returnStatus: true) == 0
+                    if (!clusterExists) {
+                        // Crée le cluster avec DOCKER_BIN défini
+                        withEnv(["DOCKER_BIN=${env.DOCKER_BIN}"]) {
+                            bat '"C:\\ProgramData\\chocolatey\\bin\\kind.exe" create cluster --name %CLUSTER_NAME%'
+                        }
+                    } else {
+                        echo "Cluster %CLUSTER_NAME% déjà existant"
+                    }
+                }
             }
         }
 
-        /* ========================================================= */
         stage('Load Images to Kind') {
             steps {
-                bat """
-                    "${KIND}" load docker-image %BACKEND_IMAGE%:latest --name traffic-cluster
-                    "${KIND}" load docker-image %FRONTEND_IMAGE%:latest --name traffic-cluster
-                """
+                withEnv(["DOCKER_BIN=${env.DOCKER_BIN}"]) {
+                    bat '"C:\\ProgramData\\chocolatey\\bin\\kind.exe" load docker-image transport-backend:latest --name %CLUSTER_NAME%'
+                    bat '"C:\\ProgramData\\chocolatey\\bin\\kind.exe" load docker-image transport-frontend:latest --name %CLUSTER_NAME%'
+                }
             }
         }
 
-        /* ========================================================= */
         stage('Deploy with Terraform') {
             steps {
                 dir('infrastructure/Terraform') {
-                    bat """
-                        "${TERRAFORM}" apply -auto-approve
-                    """
+                    bat '"C:\\ProgramData\\chocolatey\\bin\\terraform.exe" apply -auto-approve'
                 }
             }
         }
 
-        /* ========================================================= */
         stage('Wait for Pods') {
             steps {
-                bat """
-                    "${KUBECTL}" get pods --all-namespaces
-                """
+                bat '"C:\\ProgramData\\chocolatey\\bin\\kubectl.exe" wait --for=condition=ready pod -l app=traffic -n default --timeout=120s'
             }
         }
 
-        /* ========================================================= */
         stage('Verify Deployment') {
             steps {
-                bat """
-                    "${KUBECTL}" get svc
-                """
+                bat '"C:\\ProgramData\\chocolatey\\bin\\kubectl.exe" get pods'
             }
         }
     }
 
     post {
         always {
-            bat """
-                "${DOCKER}" system prune -f || exit 0
-                "${KUBECTL}" get pods > pod-status.log 2>&1 || exit 0
-            """
+            bat '"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe" system prune -f || exit 0'
             archiveArtifacts artifacts: 'pod-status.log', allowEmptyArchive: true
+        }
+        failure {
+            echo 'Le pipeline a échoué !'
+        }
+        success {
+            echo 'Pipeline terminé avec succès !'
         }
     }
 }
