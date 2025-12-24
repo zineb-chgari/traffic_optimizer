@@ -546,7 +546,7 @@ pipeline {
                 
                 echo.
                 echo === Local Docker Images ===
-                docker images | findstr "transport\|redis"
+                docker images | findstr "transport redis"
                 
                 echo.
                 echo === Node Status ===
