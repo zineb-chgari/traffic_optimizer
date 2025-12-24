@@ -113,15 +113,23 @@ pipeline {
                     echo Creating fresh cluster ${CLUSTER_NAME}...
                     kind create cluster --name ${CLUSTER_NAME}
                     
-                    echo Waiting for cluster to be ready...
-                    timeout /t 10 /nobreak
+                    echo Waiting for cluster to be fully ready...
+                    echo This may take 1-2 minutes...
                     
-                    echo Verifying kubectl configuration...
-                    kubectl config get-contexts
-                    kubectl config current-context
+                    :wait_loop
+                    kubectl get nodes | findstr "Ready" | findstr /V "NotReady" >nul 2>&1
+                    if errorlevel 1 (
+                        echo Node not ready yet, waiting 5 seconds...
+                        ping 127.0.0.1 -n 6 >nul
+                        goto wait_loop
+                    )
+                    
+                    echo Node is ready! Waiting for system pods...
+                    kubectl wait --for=condition=ready pod -l k8s-app=kube-dns -n kube-system --timeout=180s
+                    
+                    echo Cluster is fully operational!
                     kubectl get nodes
-                    
-                    echo Cluster setup complete!
+                    kubectl get pods -n kube-system
                 """
             }
         }
@@ -252,11 +260,11 @@ pipeline {
                 echo.
                 echo To access your application, run:
                 echo.
-                echo   Frontend: kubectl port-forward service/frontend-service 8081:80
+                echo   Frontend: kubectl port-forward service/frontend-service 8080:80
                 echo   Backend:  kubectl port-forward service/backend-service 3000:3000
                 echo.
                 echo Then open in browser:
-                echo   Frontend: http://localhost:8081
+                echo   Frontend: http://localhost:8080
                 echo   Backend:  http://localhost:3000
                 echo.
                 kubectl get svc
