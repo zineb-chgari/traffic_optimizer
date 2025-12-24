@@ -65,8 +65,8 @@ pipeline {
                             docker pull nginx:alpine
                             
                             echo.
-                            echo Pulling redis:7-alpine...
-                            docker pull redis:7-alpine
+                            echo Pulling redis for amd64 platform only...
+                            docker pull --platform linux/amd64 redis:7-alpine
                             
                             echo.
                             echo Verifying pulled images...
@@ -233,19 +233,18 @@ pipeline {
                     echo Frontend image loaded successfully!
                     
                     echo.
-                    echo Re-pulling Redis image to ensure integrity...
-                    docker pull redis:7-alpine --quiet
-                    
-                    echo Loading Redis base image...
-                    kind load docker-image redis:7-alpine --name ${CLUSTER_NAME}
+                    echo Loading Redis image with workaround for multi-platform issue...
+                    docker save redis:7-alpine | docker exec -i ${CLUSTER_NAME}-control-plane ctr --namespace=k8s.io images import --all-platforms=false --base-name docker.io/library/redis:7-alpine -
                     if errorlevel 1 (
-                        echo ERROR: Failed to load Redis image!
-                        echo Attempting alternative method...
-                        docker save redis:7-alpine -o redis-temp.tar
-                        kind load image-archive redis-temp.tar --name ${CLUSTER_NAME}
-                        del redis-temp.tar
+                        echo ERROR: Failed to load Redis image with direct method!
+                        echo Trying alternative tar-based method...
+                        docker save redis:7-alpine -o %TEMP%\\redis-temp.tar
+                        docker cp %TEMP%\\redis-temp.tar ${CLUSTER_NAME}-control-plane:/tmp/redis.tar
+                        docker exec ${CLUSTER_NAME}-control-plane ctr --namespace=k8s.io images import --all-platforms=false /tmp/redis.tar
+                        docker exec ${CLUSTER_NAME}-control-plane rm /tmp/redis.tar
+                        del %TEMP%\\redis-temp.tar
                         if errorlevel 1 (
-                            echo ERROR: Alternative method also failed!
+                            echo ERROR: All methods failed to load Redis image!
                             exit /b 1
                         )
                     )
@@ -263,6 +262,8 @@ pipeline {
                     docker exec ${CLUSTER_NAME}-control-plane crictl images | findstr redis >nul
                     if errorlevel 1 (
                         echo ERROR: Redis image not found in Kind cluster!
+                        echo Available images:
+                        docker exec ${CLUSTER_NAME}-control-plane crictl images
                         exit /b 1
                     )
                     
