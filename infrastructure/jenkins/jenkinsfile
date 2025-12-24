@@ -2,85 +2,145 @@ pipeline {
     agent any
 
     environment {
+        PATH = "C:\\Program Files\\Docker\\Docker\\resources\\bin;C:\\ProgramData\\chocolatey\\bin;C:\\Windows\\System32;C:\\Windows;C:\\Windows\\System32\\WindowsPowerShell\\v1.0;C:\\Program Files\\Python313;C:\\Program Files\\Python313\\Scripts"
+        BACKEND_IMAGE = "transport-backend"
+        FRONTEND_IMAGE = "transport-frontend"
+        IMAGE_TAG = "${BUILD_NUMBER}"
         CLUSTER_NAME = "k8s-terraform"
-        BACKEND_IMAGE = "transport-backend:latest"
-        FRONTEND_IMAGE = "transport-frontend:latest"
-        KUBECONFIG = "${env.WORKSPACE}\\.kube\\config"
+        KUBECONFIG = "${WORKSPACE}\\.kube\\config"
     }
 
     stages {
-        stage('Checkout') {
+
+        stage('Checkout SCM') {
             steps {
-                checkout scm
+                checkout([$class: 'GitSCM', 
+                          branches: [[name: '*/main']], 
+                          userRemoteConfigs: [[url: 'https://github.com/zineb-chgari/traffic_optimizer.git']]] )
             }
         }
 
         stage('Environment Check') {
             steps {
-                bat 'docker --version || echo Docker not found'
-                bat 'kubectl version --client || echo kubectl not found'
-                bat 'terraform version || echo Terraform not found'
-                bat 'kind version || echo Kind not found'
+                bat '''
+                echo === PATH CHECK ===
+                echo %PATH%
+                docker --version || echo Docker not found
+                kubectl version --client || echo kubectl not found
+                terraform version || echo Terraform not found
+                kind version || echo Kind not found
+                '''
             }
         }
 
-        stage('Clean Existing Kind Cluster') {
+        stage('Validate Terraform') {
             steps {
-                echo "Deleting existing Kind cluster (if any)..."
-                bat "kind delete cluster --name %CLUSTER_NAME% || exit 0"
+                dir('infrastructure\\Terraform') {
+                    bat '''
+                    terraform init -input=false
+                    terraform validate
+                    '''
+                }
             }
         }
 
-        stage('Build Docker Images') {
+        stage('Setup Kind Cluster') {
             steps {
-                bat "docker build -f backend\\Dockerfile -t %BACKEND_IMAGE% backend"
-                bat "docker build -f frontend\\Dockerfile -t %FRONTEND_IMAGE% frontend"
+                script {
+                    bat '''
+                    @echo off
+                    echo ========================================
+                    echo Checking Kind cluster status...
+                    echo ========================================
+
+                    kind get clusters 2>nul | findstr /R /C:"^%CLUSTER_NAME%$" >nul 2>&1
+                    if errorlevel 1 (
+                        echo [INFO] Cluster not found, creating new cluster...
+                        kind create cluster --name %CLUSTER_NAME% --wait 120s
+                        if errorlevel 1 (
+                            echo [ERROR] Failed to create cluster
+                            exit /b 1
+                        )
+                        echo [SUCCESS] Cluster created
+                    ) else (
+                        echo [INFO] Cluster %CLUSTER_NAME% exists, reusing it
+                    )
+                    '''
+                }
             }
         }
 
-        stage('Create Kind Cluster') {
+        stage('Build Backend Image') {
             steps {
-                echo "Creating new Kind cluster..."
-                bat """
-                kind create cluster --name %CLUSTER_NAME%
-                kubectl wait --for=condition=Ready pods --all -n kube-system --timeout=120s
-                kubectl cluster-info
-                """
+                bat '''
+                docker build -f backend\\Dockerfile -t %BACKEND_IMAGE%:latest -t %BACKEND_IMAGE%:%IMAGE_TAG% backend
+                '''
             }
         }
 
-        stage('Load Docker Images into Kind') {
+        stage('Build Frontend Image') {
             steps {
-                bat "kind load docker-image %BACKEND_IMAGE% --name %CLUSTER_NAME%"
-                bat "kind load docker-image %FRONTEND_IMAGE% --name %CLUSTER_NAME%"
+                bat '''
+                docker build -f frontend\\Dockerfile -t %FRONTEND_IMAGE%:latest -t %FRONTEND_IMAGE%:%IMAGE_TAG% frontend
+                '''
+            }
+        }
+
+        stage('Load Images to Kind') {
+            steps {
+                bat '''
+                kind load docker-image %BACKEND_IMAGE%:latest --name %CLUSTER_NAME%
+                kind load docker-image %FRONTEND_IMAGE%:latest --name %CLUSTER_NAME%
+                '''
             }
         }
 
         stage('Deploy with Terraform') {
             steps {
                 dir('infrastructure\\Terraform') {
-                    bat """
-                    set KUBECONFIG=%WORKSPACE%\\.kube\\config
-                    terraform init -input=false
-                    terraform validate
+                    bat '''
+                    kubectl config use-context kind-%CLUSTER_NAME%
                     terraform apply -auto-approve
-                    """
+                    '''
                 }
+            }
+        }
+
+        stage('Wait for Pods') {
+            steps {
+                bat '''
+                kubectl wait --for=condition=Ready pod -l app=redis --timeout=300s || echo Redis pods not ready yet
+                kubectl wait --for=condition=Ready pod -l app=backend --timeout=300s || echo Backend pods not ready yet
+                kubectl wait --for=condition=Ready pod -l app=frontend --timeout=300s || echo Frontend pods not ready yet
+                '''
             }
         }
 
         stage('Verify Deployment') {
             steps {
-                echo "Checking pods in default namespace..."
-                bat "kubectl get pods -n default"
+                bat '''
+                kubectl get pods -A
+                kubectl get svc -A
+                kubectl get nodes
+                kubectl get deployments
+                kubectl describe pods -l app=backend || echo No backend pods found
+                kubectl describe pods -l app=frontend || echo No frontend pods found
+                kubectl describe pods -l app=redis || echo No redis pods found
+                '''
             }
         }
     }
 
     post {
+        always {
+            echo "Pipeline execution completed"
+            bat "docker system prune -f || exit 0"
+        }
+        success {
+            echo "Pipeline completed successfully! Cluster %CLUSTER_NAME% is ready and will be reused in next builds."
+        }
         failure {
-            echo "Pipeline failed. You can delete the cluster and retry:"
-            echo "  kind delete cluster --name %CLUSTER_NAME%"
+            echo "Pipeline failed. You can clean up and retry with: kind delete cluster --name %CLUSTER_NAME%"
         }
     }
 }
