@@ -33,6 +33,7 @@ services:
       PORT: 3000
       REDIS_URL: redis://redis-service:6379
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3001}
+      TOMTOM_API_KEY: ${TOMTOM_API_KEY}
     volumes:
       - ./backend/logs:/app/logs
     depends_on:
@@ -53,7 +54,8 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        REACT_APP_API_URL: http://localhost:3000/api
+        REACT_APP_API_URL: http://localhost:3000
+        REACT_APP_TOMTOM_API_KEY: ${TOMTOM_API_KEY}
     image: transport-frontend:latest
     container_name: transport-frontend-prod
     ports:

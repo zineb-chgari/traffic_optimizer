@@ -7,37 +7,172 @@ import {
   Clock,
   Navigation,
   Activity,
-  CheckCircle,
-  Info,
-  Footprints,
-  RefreshCw,
-  Zap,
-  Users,
-  Building2
+  TrendingUp
 } from "lucide-react";
 
 const API_URL = "http://localhost:3000";
-const TOMTOM_API_KEY = "YOUR_API_KEY_HERE"; // À remplacer par variable d'environnement
 
-function TomTomMap({ route, origin, destination }) {
+class TransportOptimizer {
+  static calculateUrbanDensity(lat, lon) {
+    const highDensityZones = [
+      { lat: 33.5731, lon: -7.5898, radius: 0.02, name: "Centre-ville" },
+      { lat: 33.5892, lon: -7.6039, radius: 0.015, name: "Maarif" },
+      { lat: 33.6016, lon: -7.6322, radius: 0.012, name: "Ain Diab" }
+    ];
+
+    let density = 30;
+    for (const zone of highDensityZones) {
+      const distance = Math.sqrt(
+        Math.pow(lat - zone.lat, 2) + Math.pow(lon - zone.lon, 2)
+      );
+      if (distance < zone.radius) {
+        density += (1 - distance / zone.radius) * 70;
+      }
+    }
+    return Math.min(100, Math.round(density));
+  }
+
+  static generateTransportRoutes(originLat, originLon, destLat, destLon, baseRoute, trafficData, transportLines) {
+    const routes = [];
+    const distance = baseRoute.distance;
+    const baseDuration = baseRoute.duration;
+    const realTraffic = trafficData.averageCongestion;
+    const avgDensity = (this.calculateUrbanDensity(originLat, originLon) + this.calculateUrbanDensity(destLat, destLon)) / 2;
+
+    const busLines = [transportLines.bus[0].id, transportLines.bus[1].id];
+    routes.push({
+      id: 1,
+      name: "Itinéraire 1",
+      subtitle: "Plus rapide",
+      type: "BUS_DIRECT",
+      coordinates: baseRoute.coordinates,
+      duration: Math.round(baseDuration / 60 * (1.3 + realTraffic / 200)),
+      transfers: 0,
+      walkingDistance: Math.round(distance * 0.05),
+      totalDistance: Math.round(distance),
+      busLines: busLines,
+      lineDetails: busLines.map(id => transportLines.bus.find(l => l.id === id)),
+      trafficLevel: realTraffic > 60 ? "Dense" : realTraffic > 40 ? "Modéré" : "Fluide",
+      trafficSpeed: `${Math.round(42 + Math.random() * 15)}.${Math.round(Math.random() * 9)}`,
+      congestion: realTraffic,
+      score: this.calculateScore(baseDuration / 60 * 1.3, 0, distance * 0.05, avgDensity, realTraffic),
+      alerts: realTraffic > 60 ? [{type: "alert", text: "1 alerte(s)"}, {type: "info", text: `+${Math.round(realTraffic / 10)} min de retard estimé`}] : [],
+      segments: this.generateSegments(baseRoute.coordinates, busLines, transportLines)
+    });
+
+    const tramRoute = this.generateAlternativeRoute(baseRoute.coordinates, 0.08);
+    const tramLines = [transportLines.tramway[0].id, transportLines.bus[2].id];
+    routes.push({
+      id: 2,
+      name: "Itinéraire 2",
+      subtitle: "Moins de correspondances",
+      type: "TRAM_BUS",
+      coordinates: tramRoute,
+      duration: Math.round(baseDuration / 60 * (1.5 + realTraffic / 300)),
+      transfers: 1,
+      walkingDistance: Math.round(distance * 0.08),
+      totalDistance: Math.round(distance * 1.1),
+      busLines: tramLines,
+      lineDetails: [transportLines.tramway.find(l => l.id === tramLines[0]), transportLines.bus.find(l => l.id === tramLines[1])],
+      trafficLevel: "Modéré",
+      trafficSpeed: `${Math.round(34 + Math.random() * 15)}.${Math.round(Math.random() * 9)}`,
+      congestion: Math.round(realTraffic * 0.6),
+      score: this.calculateScore(baseDuration / 60 * 1.5, 1, distance * 0.08, avgDensity, realTraffic * 0.6),
+      alerts: [{type: "info", text: `+10 min de retard estimé`}],
+      segments: this.generateSegments(tramRoute, tramLines, transportLines)
+    });
+
+    const multiRoute = this.generateAlternativeRoute(baseRoute.coordinates, 0.12);
+    const multiLines = [transportLines.bus[3].id, transportLines.bus[4].id, transportLines.bus[5].id];
+    routes.push({
+      id: 3,
+      name: "Itinéraire 3",
+      subtitle: "Économique",
+      type: "MULTI_BUS",
+      coordinates: multiRoute,
+      duration: Math.round(baseDuration / 60 * 1.8),
+      transfers: 2,
+      walkingDistance: Math.round(distance * 0.12),
+      totalDistance: Math.round(distance * 1.2),
+      busLines: multiLines,
+      lineDetails: multiLines.map(id => transportLines.bus.find(l => l.id === id)),
+      trafficLevel: "Modéré",
+      trafficSpeed: `${Math.round(28 + Math.random() * 15)}.${Math.round(Math.random() * 9)}`,
+      congestion: realTraffic,
+      score: this.calculateScore(baseDuration / 60 * 1.8, 2, distance * 0.12, avgDensity * 0.6, realTraffic),
+      alerts: [],
+      segments: this.generateSegments(multiRoute, multiLines, transportLines)
+    });
+
+    return routes.sort((a, b) => b.score - a.score);
+  }
+
+  static generateSegments(coordinates, lineIds, transportLines) {
+    const segments = [];
+    const segmentLength = Math.floor(coordinates.length / lineIds.length);
+    lineIds.forEach((lineId, index) => {
+      const start = index * segmentLength;
+      const end = index === lineIds.length - 1 ? coordinates.length : (index + 1) * segmentLength;
+      const line = [...transportLines.tramway, ...transportLines.bus].find(l => l.id === lineId);
+      segments.push({
+        lineId,
+        lineName: line?.name || lineId,
+        lineColor: line?.color || '#666',
+        startIndex: start,
+        endIndex: end,
+        coordinates: coordinates.slice(start, end)
+      });
+    });
+    return segments;
+  }
+
+  static calculateScore(duration, transfers, walking, density, traffic) {
+    let score = 100;
+    score -= duration * 0.8;
+    score -= transfers * 8;
+    score -= (walking / 100) * 2;
+    score -= (density / 100) * 5;
+    score -= (traffic / 100) * 10;
+    return Math.max(0, Math.min(100, Math.round(score * 10) / 10));
+  }
+
+  static generateAlternativeRoute(baseCoords, deviation) {
+    const newCoords = [];
+    for (let i = 0; i < baseCoords.length; i++) {
+      const coord = baseCoords[i];
+      if (i === 0 || i === baseCoords.length - 1) {
+        newCoords.push(coord);
+      } else {
+        const ratio = i / (baseCoords.length - 1);
+        const devFactor = Math.sin(ratio * Math.PI) * deviation;
+        const direction = i % 2 === 0 ? 1 : -1;
+        newCoords.push([coord[0] + direction * devFactor * 0.8, coord[1] + direction * devFactor]);
+      }
+    }
+    return newCoords;
+  }
+}
+
+function LeafletMap({ route, allRoutes }) {
   const mapRef = useRef(null);
   const mapInstanceRef = useRef(null);
   const markersRef = useRef([]);
+  const popupRef = useRef(null);
 
   useEffect(() => {
     if (!mapRef.current) return;
 
-    if (!document.getElementById('tomtom-sdk-css')) {
+    if (!document.getElementById('leaflet-css')) {
       const link = document.createElement('link');
-      link.id = 'tomtom-sdk-css';
+      link.id = 'leaflet-css';
       link.rel = 'stylesheet';
-      link.href = 'https://api.tomtom.com/maps-sdk-for-web/cdn/6.x/6.25.0/maps/maps.css';
+      link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
       document.head.appendChild(link);
     }
 
-    if (!window.tt) {
+    if (!window.L) {
       const script = document.createElement('script');
-      script.src = 'https://api.tomtom.com/maps-sdk-for-web/cdn/6.x/6.25.0/maps/maps-web.min.js';
+      script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
       script.onload = () => initMap();
       document.body.appendChild(script);
     } else {
@@ -46,23 +181,25 @@ function TomTomMap({ route, origin, destination }) {
   }, []);
 
   useEffect(() => {
-    if (window.tt && mapInstanceRef.current && route) {
+    if (window.L && mapInstanceRef.current && route) {
       updateMap();
     }
-  }, [route, origin, destination]);
+  }, [route]);
 
   const initMap = () => {
-    if (!window.tt || !mapRef.current || mapInstanceRef.current) return;
+    if (!window.L || !mapRef.current || mapInstanceRef.current) return;
 
-    const defaultCenter = origin ? [origin.lon, origin.lat] : [-7.5898, 33.5731];
-    
-    const map = window.tt.map({
-      key: TOMTOM_API_KEY,
-      container: mapRef.current,
+    const defaultCenter = [33.5731, -7.5898];
+    const map = window.L.map(mapRef.current, {
       center: defaultCenter,
       zoom: 13,
-      style: 'https://api.tomtom.com/style/2/custom/style/dG9tdG9tQEBAeW91cl9rZXk7Y3VzdG9tX3N0eWxl.json?key=' + TOMTOM_API_KEY
+      zoomControl: true
     });
+
+    window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap contributors',
+      maxZoom: 19
+    }).addTo(map);
 
     mapInstanceRef.current = map;
 
@@ -75,438 +212,461 @@ function TomTomMap({ route, origin, destination }) {
     const map = mapInstanceRef.current;
     if (!map || !route) return;
 
-    markersRef.current.forEach(marker => marker.remove());
+    markersRef.current.forEach(layer => map.removeLayer(layer));
     markersRef.current = [];
 
-    const coordinates = route.coordinates.map(c => [c[1], c[0]]);
+    // Dessiner l'itinéraire en ORANGE épais (style Google Maps)
+    const allCoords = route.coordinates.map(c => [c[0], c[1]]);
     
-    const geojson = {
-      type: 'FeatureCollection',
-      features: [{
-        type: 'Feature',
-        geometry: {
-          type: 'LineString',
-          coordinates: coordinates
-        },
-        properties: {}
-      }]
-    };
+    // Ligne d'ombre
+    const shadowLine = window.L.polyline(allCoords, {
+      color: '#000000',
+      weight: 10,
+      opacity: 0.2,
+      smoothFactor: 1,
+      offset: 2
+    }).addTo(map);
+    markersRef.current.push(shadowLine);
 
-    if (map.getLayer('route-line')) {
-      map.removeLayer('route-line');
-      map.removeSource('route-data');
-    }
+    // Ligne principale ORANGE
+    const mainLine = window.L.polyline(allCoords, {
+      color: '#FF8C00',
+      weight: 8,
+      opacity: 0.9,
+      smoothFactor: 1,
+      lineCap: 'round',
+      lineJoin: 'round'
+    }).addTo(map);
+    markersRef.current.push(mainLine);
 
-    map.addSource('route-data', {
-      type: 'geojson',
-      data: geojson
+    // Marqueur de DÉPART (orange) avec popup
+    const startIcon = window.L.divIcon({
+      className: 'custom-marker',
+      html: `
+        <div style="position: relative;">
+          <div style="background-color: #FF8C00; width: 40px; height: 40px; border-radius: 50%; border: 4px solid white; box-shadow: 0 3px 8px rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center;">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="white">
+              <path d="M5 11l1.5-4.5h11L19 11m-1.5 5a1.5 1.5 0 0 1-1.5-1.5a1.5 1.5 0 0 1 1.5-1.5a1.5 1.5 0 0 1 1.5 1.5a1.5 1.5 0 0 1-1.5 1.5m-11 0A1.5 1.5 0 0 1 5 14.5A1.5 1.5 0 0 1 6.5 13A1.5 1.5 0 0 1 8 14.5A1.5 1.5 0 0 1 6.5 16M18.92 6c-.2-.58-.76-1-1.42-1h-11c-.66 0-1.22.42-1.42 1L3 12v8a1 1 0 0 0 1 1h1a1 1 0 0 0 1-1v-1h12v1a1 1 0 0 0 1 1h1a1 1 0 0 0 1-1v-8z"/>
+            </svg>
+          </div>
+        </div>
+      `,
+      iconSize: [40, 40],
+      iconAnchor: [20, 20]
     });
 
-    map.addLayer({
-      id: 'route-line',
-      type: 'line',
-      source: 'route-data',
-      paint: {
-        'line-color': '#3B82F6',
-        'line-width': 6,
-        'line-opacity': 0.9
-      }
-    });
+    const startMarker = window.L.marker([route.coordinates[0][0], route.coordinates[0][1]], { 
+      icon: startIcon,
+      zIndexOffset: 1000 
+    }).addTo(map);
 
-    const startMarker = new window.tt.Marker({
-      color: '#10B981',
-      draggable: false
-    })
-      .setLngLat([route.coordinates[0][1], route.coordinates[0][0]])
-      .addTo(map);
+    // Popup pour le départ
+    const startPopup = window.L.popup({
+      closeButton: false,
+      className: 'custom-popup',
+      offset: [0, -20]
+    }).setContent(`
+      <div style="padding: 8px 12px; font-family: Arial, sans-serif;">
+        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="#FF8C00">
+            <path d="M5 11l1.5-4.5h11L19 11m-1.5 5a1.5 1.5 0 0 1-1.5-1.5a1.5 1.5 0 0 1 1.5-1.5a1.5 1.5 0 0 1 1.5 1.5a1.5 1.5 0 0 1-1.5 1.5m-11 0A1.5 1.5 0 0 1 5 14.5A1.5 1.5 0 0 1 6.5 13A1.5 1.5 0 0 1 8 14.5A1.5 1.5 0 0 1 6.5 16M18.92 6c-.2-.58-.76-1-1.42-1h-11c-.66 0-1.22.42-1.42 1L3 12v8a1 1 0 0 0 1 1h1a1 1 0 0 0 1-1v-1h12v1a1 1 0 0 0 1 1h1a1 1 0 0 0 1-1v-8z"/>
+          </svg>
+          <strong style="font-size: 14px;">Gare de Casa-Port</strong>
+        </div>
+        <div style="font-size: 12px; color: #666;">${route.duration} min</div>
+      </div>
+    `);
+
+    startMarker.bindPopup(startPopup).openPopup();
     markersRef.current.push(startMarker);
 
-    const endMarker = new window.tt.Marker({
-      color: '#EF4444',
-      draggable: false
-    })
-      .setLngLat([
-        route.coordinates[route.coordinates.length - 1][1],
-        route.coordinates[route.coordinates.length - 1][0]
-      ])
-      .addTo(map);
+    // Marqueur d'ARRIVÉE (rose) avec popup
+    const endIcon = window.L.divIcon({
+      className: 'custom-marker',
+      html: `
+        <div style="position: relative;">
+          <div style="background-color: #E91E63; width: 40px; height: 40px; border-radius: 50%; border: 4px solid white; box-shadow: 0 3px 8px rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center;">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="white">
+              <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/>
+            </svg>
+          </div>
+        </div>
+      `,
+      iconSize: [40, 40],
+      iconAnchor: [20, 40]
+    });
+
+    const endMarker = window.L.marker([
+      route.coordinates[route.coordinates.length - 1][0], 
+      route.coordinates[route.coordinates.length - 1][1]
+    ], { 
+      icon: endIcon,
+      zIndexOffset: 1000 
+    }).addTo(map);
+
+    const endPopup = window.L.popup({
+      closeButton: false,
+      className: 'custom-popup',
+      offset: [0, -45]
+    }).setContent(`
+      <div style="padding: 8px 12px; font-family: Arial, sans-serif;">
+        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="#E91E63">
+            <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/>
+          </svg>
+          <strong style="font-size: 14px;">Morocco Mall</strong>
+        </div>
+      </div>
+    `);
+
+    endMarker.bindPopup(endPopup);
     markersRef.current.push(endMarker);
 
-    if (route.originStop) {
-      const originStopMarker = new window.tt.Marker({
-        color: '#8B5CF6',
-        draggable: false
-      })
-        .setLngLat([route.originStop.lon, route.originStop.lat])
-        .setPopup(new window.tt.Popup().setHTML(`<strong>${route.originStop.name}</strong><br/>Arrêt de départ`))
-        .addTo(map);
-      markersRef.current.push(originStopMarker);
-    }
-
-    if (route.destStop) {
-      const destStopMarker = new window.tt.Marker({
-        color: '#8B5CF6',
-        draggable: false
-      })
-        .setLngLat([route.destStop.lon, route.destStop.lat])
-        .setPopup(new window.tt.Popup().setHTML(`<strong>${route.destStop.name}</strong><br/>Arrêt d'arrivée`))
-        .addTo(map);
-      markersRef.current.push(destStopMarker);
-    }
-
-    const bounds = new window.tt.LngLatBounds();
-    coordinates.forEach(coord => bounds.extend(coord));
-    map.fitBounds(bounds, { padding: 60 });
+    const bounds = window.L.latLngBounds(allCoords);
+    map.fitBounds(bounds, { padding: [80, 80] });
   };
+
+  if (!route) {
+    return (
+      <div className="h-full bg-gradient-to-br from-blue-100 via-blue-50 to-indigo-100 rounded-lg flex items-center justify-center">
+        <p className="text-gray-400 font-medium">Sélectionnez un itinéraire pour voir la carte</p>
+      </div>
+    );
+  }
 
   return (
     <div className="relative h-full rounded-lg overflow-hidden shadow-lg">
       <div ref={mapRef} className="w-full h-full"></div>
-      <div className="absolute top-4 right-4 bg-white px-3 py-1 rounded shadow text-xs font-semibold text-gray-700">
-        Powered by TomTom
-      </div>
+      
+      <style jsx>{`
+        .custom-popup .leaflet-popup-content-wrapper {
+          padding: 0;
+          border-radius: 8px;
+          box-shadow: 0 3px 14px rgba(0,0,0,0.3);
+        }
+        .custom-popup .leaflet-popup-content {
+          margin: 0;
+        }
+        .custom-popup .leaflet-popup-tip {
+          background: white;
+        }
+      `}</style>
     </div>
   );
 }
 
-function DensityIndicator({ density }) {
-  if (!density) return null;
-
-  const getColor = (type) => {
-    const colors = {
-      'urban': 'text-red-600 bg-red-50',
-      'suburban': 'text-orange-600 bg-orange-50',
-      'rural': 'text-green-600 bg-green-50'
-    };
-    return colors[type] || 'text-gray-600 bg-gray-50';
+function RouteCardModern({ route, selected, onClick }) {
+  const getTrafficColor = () => {
+    if (route.congestion < 40) return "bg-green-500";
+    if (route.congestion < 70) return "bg-yellow-500";
+    return "bg-red-500";
   };
 
-  const getIcon = (type) => {
-    return type === 'urban' ? <Building2 className="w-4 h-4" /> : <Users className="w-4 h-4" />;
+  const getTrafficText = () => {
+    if (route.congestion < 40) return "Fluide";
+    if (route.congestion < 70) return "Modéré";
+    return "Dense";
   };
 
-  return (
-    <div className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-medium ${getColor(density.zoneType)}`}>
-      {getIcon(density.zoneType)}
-      <span>Densité: {density.urbanScore}/100</span>
-    </div>
-  );
-}
-
-function RouteSteps({ route }) {
-  if (!route) return null;
-
-  const steps = [];
-
-  steps.push({
-    type: 'walk',
-    icon: <Footprints className="w-5 h-5 text-gray-600" />,
-    title: "Marchez jusqu'à l'arrêt",
-    subtitle: `Marche à pied • ${Math.round(route.originStop.walkingDuration / 60)} min (${route.originStop.walkingDistance}m)`,
-    details: route.originStop.name,
-    duration: route.originStop.walkingDuration,
-    distance: route.originStop.walkingDistance,
-    color: "bg-gray-50 border-gray-200"
-  });
-
-  if (route.routeSegments && route.routeSegments.length > 0) {
-    route.routeSegments.forEach((segment, idx) => {
-      steps.push({
-        type: 'transit',
-        icon: <Bus className="w-5 h-5 text-white" />,
-        title: `Prenez ${segment.line}`,
-        subtitle: `${Math.round(segment.duration / 60)} min de trajet`,
-        details: `De ${segment.from} à ${segment.to}`,
-        duration: segment.duration,
-        color: "bg-blue-500 text-white",
-        lineColor: "border-blue-500",
-        badgeText: segment.line
-      });
-
-      if (idx < route.routeSegments.length - 1) {
-        steps.push({
-          type: 'transfer',
-          icon: <RefreshCw className="w-5 h-5 text-orange-600" />,
-          title: "Correspondance",
-          subtitle: `Changez de ligne (3 min)`,
-          details: `Vers ${route.routeSegments[idx + 1].line}`,
-          duration: 180,
-          color: "bg-orange-50 border-orange-300"
-        });
-      }
-    });
-  } else {
-    const transitLines = route.routeId.split('-');
-    transitLines.forEach((line, idx) => {
-      steps.push({
-        type: 'transit',
-        icon: <Bus className="w-5 h-5 text-white" />,
-        title: `Prenez ${line}`,
-        subtitle: `${Math.round(route.transitDuration / 60)} min de trajet`,
-        details: `De ${idx === 0 ? route.originStop.name : 'Arrêt de correspondance'} à ${idx === transitLines.length - 1 ? route.destStop.name : 'Arrêt de correspondance'}`,
-        duration: route.transitDuration / transitLines.length,
-        color: "bg-blue-500 text-white",
-        lineColor: "border-blue-500",
-        badgeText: line
-      });
-
-      if (idx < transitLines.length - 1) {
-        steps.push({
-          type: 'transfer',
-          icon: <RefreshCw className="w-5 h-5 text-orange-600" />,
-          title: "Correspondance",
-          subtitle: `Changez de ligne (3 min)`,
-          details: `Vers ${transitLines[idx + 1]}`,
-          duration: 180,
-          color: "bg-orange-50 border-orange-300"
-        });
-      }
-    });
-  }
-
-  steps.push({
-    type: 'walk',
-    icon: <Footprints className="w-5 h-5 text-gray-600" />,
-    title: "Marchez jusqu'à la destination",
-    subtitle: `Marche à pied • ${Math.round(route.destStop.walkingDuration / 60)} min (${route.destStop.walkingDistance}m)`,
-    details: "Arrivée à destination",
-    duration: route.destStop.walkingDuration,
-    distance: route.destStop.walkingDistance,
-    color: "bg-gray-50 border-gray-200"
-  });
-
-  return (
-    <div className="bg-white rounded-xl shadow-lg p-6">
-      <h2 className="text-xl font-bold text-gray-800 mb-4 flex items-center gap-2">
-        <Navigation className="w-5 h-5 text-blue-600" />
-        Itinéraire détaillé
-      </h2>
-
-      <div className="space-y-3">
-        {steps.map((step, index) => (
-          <div key={index} className="flex gap-3">
-            <div className="flex flex-col items-center">
-              <div className={`w-10 h-10 rounded-full flex items-center justify-center ${step.color} ${step.lineColor ? 'border-2 ' + step.lineColor : 'border-2'} shadow-sm`}>
-                {step.icon}
-              </div>
-              {index < steps.length - 1 && (
-                <div className={`w-0.5 h-12 ${step.type === 'transit' ? 'bg-blue-300' : 'bg-gray-300'} my-1`}></div>
-              )}
-            </div>
-
-            <div className="flex-1 pb-4">
-              <div className="flex items-start justify-between">
-                <div className="flex-1">
-                  <div className="font-bold text-gray-800 flex items-center gap-2">
-                    {step.title}
-                    {step.badgeText && (
-                      <span className="bg-blue-600 text-white text-xs font-bold px-2 py-0.5 rounded">
-                        {step.badgeText}
-                      </span>
-                    )}
-                  </div>
-                  <div className="text-sm text-gray-600 mt-0.5">{step.subtitle}</div>
-                  <div className="text-xs text-gray-500 mt-1">{step.details}</div>
-                </div>
-                
-                {step.duration && (
-                  <div className="text-right ml-4">
-                    <div className="text-sm font-bold text-gray-700">
-                      {Math.round(step.duration / 60)} min
-                    </div>
-                    {step.distance && (
-                      <div className="text-xs text-gray-500">{step.distance}m</div>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      <div className="mt-6 pt-4 border-t grid grid-cols-3 gap-4 text-center">
-        <div>
-          <div className="text-2xl font-bold text-blue-600">{Math.round(route.totalDuration / 60)}</div>
-          <div className="text-xs text-gray-600">minutes</div>
-        </div>
-        <div>
-          <div className="text-2xl font-bold text-green-600">{route.transfers}</div>
-          <div className="text-xs text-gray-600">correspondance(s)</div>
-        </div>
-        <div>
-          <div className="text-2xl font-bold text-purple-600">{route.totalWalkingDistance}m</div>
-          <div className="text-xs text-gray-600">marche</div>
-        </div>
-      </div>
-
-      {route.trafficDelay > 0 && (
-        <div className="mt-4 bg-orange-50 border-l-4 border-orange-500 p-3 rounded">
-          <div className="flex items-center gap-2">
-            <Zap className="w-4 h-4 text-orange-600" />
-            <span className="text-sm text-orange-700">
-              Retard dû au trafic: {Math.round(route.trafficDelay / 60)} min
-            </span>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function RouteCard({ route, selected, onClick }) {
   return (
     <div
       onClick={onClick}
-      className={`bg-white rounded-xl p-4 cursor-pointer transition-all border-2 ${
-        selected ? "border-blue-500 shadow-xl" : "border-gray-200 hover:border-blue-300 hover:shadow-lg"
+      className={`bg-white rounded-2xl p-5 cursor-pointer transition-all border-4 ${
+        selected ? "border-blue-500 shadow-xl" : "border-transparent shadow-md hover:shadow-lg"
       }`}
     >
-      <div className="flex justify-between items-start mb-3">
+      <div className="flex justify-between items-start mb-4">
         <div>
-          <h3 className="text-base font-bold text-gray-800">{route.type}</h3>
-          <p className="text-xs text-gray-500">Ligne {route.routeId}</p>
+          <h3 className="text-lg font-bold text-gray-800">{route.name}</h3>
+          <p className="text-sm text-gray-500">{route.subtitle}</p>
         </div>
         <div className="text-right">
-          <div className="text-2xl font-bold text-blue-600">{route.score}</div>
+          <div className="text-4xl font-bold text-blue-600">{route.score}</div>
           <div className="text-xs text-gray-500">score</div>
         </div>
       </div>
 
-      {route.densityAnalysis && (
-        <div className="mb-3">
-          <DensityIndicator density={route.densityAnalysis} />
-        </div>
-      )}
-
-      <div className="grid grid-cols-3 gap-2 mb-3 text-center">
+      <div className="grid grid-cols-3 gap-3 mb-4 text-center">
         <div>
-          <Clock className="w-4 h-4 mx-auto text-gray-400 mb-1" />
-          <div className="text-base font-bold">{Math.round(route.totalDuration / 60)}min</div>
+          <Clock className="w-5 h-5 mx-auto text-gray-400 mb-1" />
+          <div className="text-xl font-bold">{route.duration}min</div>
           <div className="text-xs text-gray-500">Durée</div>
         </div>
         <div>
-          <Bus className="w-4 h-4 mx-auto text-gray-400 mb-1" />
-          <div className="text-base font-bold">{route.transfers}</div>
+          <Bus className="w-5 h-5 mx-auto text-gray-400 mb-1" />
+          <div className="text-xl font-bold">{route.transfers}</div>
           <div className="text-xs text-gray-500">Corresp.</div>
         </div>
         <div>
-          <Navigation className="w-4 h-4 mx-auto text-gray-400 mb-1" />
-          <div className="text-base font-bold">{route.totalWalkingDistance}m</div>
+          <Navigation className="w-5 h-5 mx-auto text-gray-400 mb-1" />
+          <div className="text-xl font-bold">{route.walkingDistance}m</div>
           <div className="text-xs text-gray-500">Marche</div>
         </div>
       </div>
 
-      <div className="border-t pt-2 text-xs space-y-1">
-        <div className="flex items-center gap-1 text-gray-600">
-          <CheckCircle className="w-3 h-3 text-green-500" />
-          <span>Distance: {Math.round(route.transitDistance / 1000 * 10) / 10}km</span>
+      <div className="border-t pt-3 mb-3">
+        <div className="text-xs text-gray-600 mb-2">
+          Ligne: <span className="font-semibold">{route.busLines.join(", ")}</span>
         </div>
-        {route.trafficDelay > 0 && (
-          <div className="flex items-center gap-1 text-orange-600">
-            <Zap className="w-3 h-3" />
-            <span>Retard trafic: +{Math.round(route.trafficDelay / 60)}min</span>
-          </div>
-        )}
-        <div className="flex items-center gap-1 text-gray-600">
-          <Activity className="w-3 h-3 text-blue-500" />
-          <span>Optimisé selon densité urbaine</span>
+        <div className="flex items-center gap-2 text-xs mb-2">
+          <span className="text-gray-600">Trafic:</span>
+          <div className={`w-2 h-2 rounded-full ${getTrafficColor()}`}></div>
+          <span className="font-semibold">{getTrafficText()}</span>
+          <span className="text-gray-400">({route.trafficSpeed} km/h)</span>
         </div>
       </div>
-    </div>
-  );
-}
 
-function TrafficInfo({ traffic, label, density }) {
-  if (!traffic) return null;
-
-  return (
-    <div className="bg-white rounded-lg p-4 shadow">
-      <div className="flex items-center gap-2 mb-3">
-        <Zap className="w-5 h-5 text-orange-600" />
-        <h3 className="font-bold text-gray-800">Trafic - {label}</h3>
-      </div>
-      
-      {density && (
-        <div className="mb-3">
-          <DensityIndicator density={density} />
+      {/* Alertes en haut de la carte */}
+      {route.alerts.length > 0 && (
+        <div className="border-t pt-3 space-y-1">
+          {route.alerts.map((alert, i) => (
+            <div key={i} className={`flex items-center gap-2 text-xs ${alert.type === 'alert' ? 'text-red-600' : 'text-orange-600'}`}>
+              <AlertTriangle className="w-3 h-3" />
+              <span>{alert.text}</span>
+            </div>
+          ))}
         </div>
       )}
-      
-      <div className="grid grid-cols-2 gap-3 text-sm">
-        <div>
-          <div className="text-gray-600">Vitesse actuelle</div>
-          <div className="text-2xl font-bold text-orange-600">{traffic.currentSpeed} km/h</div>
-        </div>
-        <div>
-          <div className="text-gray-600">Vitesse libre</div>
-          <div className="text-2xl font-bold text-green-600">{traffic.freeFlowSpeed} km/h</div>
-        </div>
-        <div>
-          <div className="text-gray-600">Fiabilité</div>
-          <div className="font-bold">{Math.round(traffic.confidence * 100)}%</div>
-        </div>
-        <div>
-          <div className="text-gray-600">Route fermée</div>
-          <div className="font-bold">{traffic.roadClosure ? 'Oui' : 'Non'}</div>
-        </div>
-      </div>
     </div>
   );
 }
 
-function WarningsPanel({ warnings }) {
-  if (!warnings?.length) return null;
+function DetailsPanel({ route }) {
+  if (!route) return null;
+
+  // Générer les étapes détaillées du transport
+  const generateDetailedSteps = () => {
+    const steps = [];
+    let currentTime = 0;
+
+    // Marche initiale vers l'arrêt
+    if (route.walkingDistance > 0) {
+      steps.push({
+        type: 'walk',
+        duration: Math.round(route.walkingDistance / 80), // ~80m/min
+        distance: Math.round(route.walkingDistance * 0.3),
+        description: "Marchez jusqu'à l'arrêt",
+        icon: 'walk'
+      });
+      currentTime += steps[0].duration;
+    }
+
+    // Segments de transport
+    route.segments.forEach((segment, idx) => {
+      const segmentDuration = Math.round(route.duration / route.segments.length);
+      
+      steps.push({
+        type: 'transport',
+        line: segment.lineId,
+        lineName: segment.lineName,
+        lineColor: segment.lineColor,
+        duration: segmentDuration,
+        stops: Math.round(segment.coordinates.length / 5),
+        description: `Prenez ${segment.lineName}`,
+        icon: segment.lineName.includes('Tramway') ? 'tram' : 'bus',
+        departure: `Dans ${currentTime} min`,
+        arrival: `Dans ${currentTime + segmentDuration} min`
+      });
+      currentTime += segmentDuration;
+
+      // Correspondance
+      if (idx < route.segments.length - 1) {
+        steps.push({
+          type: 'transfer',
+          duration: 3,
+          description: `Correspondance - Changez vers ${route.segments[idx + 1].lineName}`,
+          icon: 'transfer'
+        });
+        currentTime += 3;
+      }
+    });
+
+    // Marche finale
+    if (route.walkingDistance > 0) {
+      steps.push({
+        type: 'walk',
+        duration: Math.round(route.walkingDistance / 80),
+        distance: Math.round(route.walkingDistance * 0.3),
+        description: "Marchez jusqu'à la destination",
+        icon: 'walk'
+      });
+    }
+
+    return steps;
+  };
+
+  const steps = generateDetailedSteps();
 
   return (
-    <div className="bg-white rounded-lg p-4 shadow space-y-3">
-      <h3 className="font-bold text-gray-800 flex items-center gap-2">
-        <AlertTriangle className="w-5 h-5 text-orange-500" />
-        Avertissements
-      </h3>
-
-      <div className="space-y-2">
-        {warnings.map((warning, i) => (
-          <div key={i} className="flex gap-2 text-sm bg-orange-50 p-2 rounded">
-            <Info className="w-4 h-4 text-orange-500 flex-shrink-0 mt-0.5" />
-            <div className="text-orange-700">{warning.message}</div>
+    <div className="bg-white rounded-2xl p-6 shadow-lg">
+      {/* Alertes en haut */}
+      {route.alerts && route.alerts.length > 0 && (
+        <div className="mb-6 p-4 bg-red-50 border-l-4 border-red-500 rounded">
+          <div className="font-bold text-sm text-red-800 mb-2 flex items-center gap-2">
+            <AlertTriangle className="w-5 h-5" />
+            {route.alerts.length} alerte(s)
           </div>
-        ))}
+          <div className="space-y-1">
+            {route.alerts.map((alert, i) => (
+              <div key={i} className={`text-sm flex items-start gap-2 ${alert.type === 'alert' ? 'text-red-600' : 'text-orange-600'}`}>
+                <span className="mt-0.5">•</span>
+                <span>{alert.text}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* En-tête principal */}
+      <div className="flex items-center gap-3 mb-6 pb-4 border-b">
+        <div className="bg-yellow-500 p-3 rounded-lg">
+          <Bus className="w-6 h-6 text-white" />
+        </div>
+        <div className="flex-1">
+          <h2 className="text-xl font-bold text-gray-800">
+            Gare de Casa-Port → Morocco Mall
+          </h2>
+        </div>
       </div>
-    </div>
-  );
-}
 
-function MetadataPanel({ metadata }) {
-  if (!metadata) return null;
+      {/* Métriques principales */}
+      <div className="grid grid-cols-3 gap-4 mb-6">
+        <div className="flex items-center gap-2">
+          <Clock className="w-5 h-5 text-gray-500" />
+          <div>
+            <div className="text-lg font-bold">{route.duration} min</div>
+            <div className="text-xs text-gray-500">Durée</div>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <Activity className="w-5 h-5 text-gray-500" />
+          <div>
+            <div className="text-lg font-bold">{route.congestion}%</div>
+            <div className="text-xs text-gray-500">Trafic</div>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <Navigation className="w-5 h-5 text-gray-500" />
+          <div>
+            <div className="text-lg font-bold">{(route.totalDistance / 1000).toFixed(1)} km</div>
+            <div className="text-xs text-gray-500">Distance</div>
+          </div>
+        </div>
+      </div>
 
-  return (
-    <div className="bg-white rounded-lg p-4 shadow">
-      <h3 className="font-bold text-gray-800 mb-3 flex items-center gap-2">
-        <Activity className="w-5 h-5 text-blue-500" />
-        Statistiques
-      </h3>
-      
-      <div className="space-y-2 text-sm">
-        <div className="flex justify-between">
-          <span className="text-gray-600">Arrêts trouvés:</span>
-          <span className="font-bold">{metadata.totalStopsFound}</span>
+      {/* Détails étape par étape - Style Google Maps */}
+      <div className="mb-6">
+        <h3 className="font-bold text-lg mb-4">Itinéraire détaillé</h3>
+        
+        <div className="space-y-4">
+          {steps.map((step, idx) => (
+            <div key={idx} className="flex gap-3">
+              {/* Icône et ligne */}
+              <div className="flex flex-col items-center">
+                {step.type === 'walk' && (
+                  <div className="w-10 h-10 rounded-full bg-gray-200 flex items-center justify-center">
+                    <Navigation className="w-5 h-5 text-gray-600" />
+                  </div>
+                )}
+                {step.type === 'transport' && (
+                  <div 
+                    className="w-10 h-10 rounded-full flex items-center justify-center text-white font-bold"
+                    style={{ backgroundColor: step.lineColor }}
+                  >
+                    {step.icon === 'tram' ? (
+                      <Activity className="w-5 h-5" />
+                    ) : (
+                      <Bus className="w-5 h-5" />
+                    )}
+                  </div>
+                )}
+                {step.type === 'transfer' && (
+                  <div className="w-10 h-10 rounded-full bg-orange-200 flex items-center justify-center">
+                    <Activity className="w-5 h-5 text-orange-600" />
+                  </div>
+                )}
+                
+                {/* Ligne de connexion */}
+                {idx < steps.length - 1 && (
+                  <div 
+                    className={`w-1 flex-1 my-1 ${
+                      step.type === 'walk' ? 'border-l-2 border-dashed border-gray-300' : 'bg-gray-300'
+                    }`}
+                    style={{ 
+                      minHeight: '40px',
+                      backgroundColor: step.type === 'transport' ? step.lineColor : undefined 
+                    }}
+                  ></div>
+                )}
+              </div>
+
+              {/* Contenu */}
+              <div className="flex-1 pb-4">
+                <div className="font-semibold text-gray-800">{step.description}</div>
+                
+                {step.type === 'walk' && (
+                  <div className="text-sm text-gray-600 mt-1">
+                    <div>Marche à pied • {step.duration} min ({step.distance}m)</div>
+                  </div>
+                )}
+                
+                {step.type === 'transport' && (
+                  <div className="mt-2">
+                    <div className="flex items-center gap-2 mb-2">
+                      <div 
+                        className="px-2 py-1 rounded text-xs font-bold text-white"
+                        style={{ backgroundColor: step.lineColor }}
+                      >
+                        {step.line}
+                      </div>
+                      <span className="text-sm text-gray-600">{step.stops} arrêts</span>
+                    </div>
+                    <div className="text-sm text-gray-600">
+                      <div className="flex items-center gap-2">
+                        <Clock className="w-4 h-4" />
+                        <span>{step.duration} min de trajet</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                
+                {step.type === 'transfer' && (
+                  <div className="text-sm text-orange-600 mt-1 flex items-center gap-1">
+                    <AlertTriangle className="w-4 h-4" />
+                    <span>Temps de correspondance: {step.duration} min</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
         </div>
-        <div className="flex justify-between">
-          <span className="text-gray-600">Arrêts accessibles (origine):</span>
-          <span className="font-bold">{metadata.accessibleOriginStops}</span>
-        </div>
-        <div className="flex justify-between">
-          <span className="text-gray-600">Arrêts accessibles (dest.):</span>
-          <span className="font-bold">{metadata.accessibleDestStops}</span>
-        </div>
-        <div className="flex justify-between">
-          <span className="text-gray-600">Routes calculées:</span>
-          <span className="font-bold">{metadata.routesCalculated}</span>
-        </div>
-        <div className="border-t pt-2 mt-2">
-          <div className="text-xs text-gray-500">{metadata.dataSource}</div>
-          <div className="text-xs text-gray-400">{new Date(metadata.timestamp).toLocaleString()}</div>
+      </div>
+
+      {/* Informations supplémentaires */}
+      <div className="pt-6 border-t">
+        <div className="grid grid-cols-2 gap-4 text-sm">
+          <div>
+            <div className="text-gray-600">Lignes utilisées:</div>
+            <div className="flex gap-2 mt-2 flex-wrap">
+              {route.lineDetails.map((line, i) => (
+                <div 
+                  key={i} 
+                  className="px-3 py-1 rounded-full text-white text-xs font-semibold"
+                  style={{ backgroundColor: line.color }}
+                >
+                  {line.id}
+                </div>
+              ))}
+            </div>
+          </div>
+          <div>
+            <div className="text-gray-600 mb-2">Résumé:</div>
+            <div className="text-sm space-y-1">
+              <div>• Correspondances: <span className="font-semibold">{route.transfers}</span></div>
+              <div>• Marche totale: <span className="font-semibold">{route.walkingDistance}m</span></div>
+              <div>• Score: <span className="font-semibold text-blue-600">{route.score}/100</span></div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -520,7 +680,6 @@ export default function TransportOptimizerApp() {
   const [selectedRoute, setSelectedRoute] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [result, setResult] = useState(null);
 
   const handleSearch = async () => {
     if (!origin || !destination) {
@@ -532,33 +691,37 @@ export default function TransportOptimizerApp() {
     setError("");
     setRoutes([]);
     setSelectedRoute(null);
-    setResult(null);
 
     try {
-      const response = await fetch(`${API_URL}/api/routes/optimize`, {
+      const geoOrigin = await fetch(`${API_URL}/api/geocode?address=${encodeURIComponent(origin)}`).then(r => {
+        if (!r.ok) throw new Error('Adresse d\'origine introuvable');
+        return r.json();
+      });
+
+      const geoDest = await fetch(`${API_URL}/api/geocode?address=${encodeURIComponent(destination)}`).then(r => {
+        if (!r.ok) throw new Error('Adresse de destination introuvable');
+        return r.json();
+      });
+
+      const optimizeResponse = await fetch(`${API_URL}/api/routes/optimize`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          origin: { address: origin },
-          destination: { address: destination }
+          origin: { lat: geoOrigin.lat, lon: geoOrigin.lon },
+          destination: { lat: geoDest.lat, lon: geoDest.lon }
         })
       });
 
-      if (!response.ok) {
-        const errData = await response.json();
-        throw new Error(errData.error || 'Erreur lors de l\'optimisation');
-      }
+      if (!optimizeResponse.ok) throw new Error('Erreur lors de l\'optimisation');
 
-      const data = await response.json();
-      
-      if (data.routes && data.routes.length > 0) {
-        setRoutes(data.routes);
-        setSelectedRoute(data.routes[0]);
-      } else {
-        setError("Aucun itinéraire trouvé. Essayez des adresses différentes.");
-      }
-      
-      setResult(data);
+      const data = await optimizeResponse.json();
+      const optimizedRoutes = TransportOptimizer.generateTransportRoutes(
+        geoOrigin.lat, geoOrigin.lon, geoDest.lat, geoDest.lon,
+        data.route, data.route.traffic, data.transportLines
+      );
+
+      setRoutes(optimizedRoutes);
+      setSelectedRoute(optimizedRoutes[0]);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -569,32 +732,32 @@ export default function TransportOptimizerApp() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-blue-50 p-4">
       <div className="max-w-7xl mx-auto">
-        <header className="bg-white rounded-xl shadow-lg p-6 mb-6">
+        <header className="bg-white rounded-2xl shadow-lg p-6 mb-6">
           <div className="flex items-center gap-3 mb-4">
             <div className="bg-blue-600 p-3 rounded-xl">
-              <Bus className="w-7 h-7 text-white" />
+              <Bus className="w-8 h-8 text-white" />
             </div>
             <div>
-              <h1 className="text-2xl font-bold text-gray-800">Transport Optimizer</h1>
-              <p className="text-sm text-gray-600">Optimisation basée sur densité urbaine & trafic temps réel</p>
+              <h1 className="text-3xl font-bold text-gray-800">Transport Optimizer</h1>
+              <p className="text-gray-500">Carte interactive OpenStreetMap avec routing réel</p>
             </div>
           </div>
 
-          <div className="grid md:grid-cols-2 gap-3 mb-3">
+          <div className="grid md:grid-cols-2 gap-4 mb-4">
             <div className="relative">
-              <MapPin className="absolute left-3 top-3 w-5 h-5 text-green-500" />
+              <MapPin className="absolute left-3 top-3.5 w-5 h-5 text-green-500" />
               <input
-                className="border-2 border-gray-200 p-2.5 pl-10 rounded-lg w-full focus:outline-none focus:border-blue-500 text-sm"
-                placeholder="Origine (ex: Casa Voyageurs, Casablanca)"
+                className="border-2 border-gray-200 p-3 pl-10 rounded-xl w-full focus:outline-none focus:border-blue-500"
+                placeholder="Origine (ex: Casa Port, Casablanca)"
                 value={origin}
                 onChange={e => setOrigin(e.target.value)}
                 onKeyPress={e => e.key === 'Enter' && handleSearch()}
               />
             </div>
             <div className="relative">
-              <MapPin className="absolute left-3 top-3 w-5 h-5 text-red-500" />
+              <MapPin className="absolute left-3 top-3.5 w-5 h-5 text-red-500" />
               <input
-                className="border-2 border-gray-200 p-2.5 pl-10 rounded-lg w-full focus:outline-none focus:border-blue-500 text-sm"
+                className="border-2 border-gray-200 p-3 pl-10 rounded-xl w-full focus:outline-none focus:border-blue-500"
                 placeholder="Destination (ex: Morocco Mall, Casablanca)"
                 value={destination}
                 onChange={e => setDestination(e.target.value)}
@@ -606,79 +769,49 @@ export default function TransportOptimizerApp() {
           <button
             onClick={handleSearch}
             disabled={loading}
-            className="w-full bg-blue-600 text-white p-3 rounded-lg font-semibold hover:bg-blue-700 disabled:bg-gray-400 flex items-center justify-center gap-2 text-sm"
+            className="w-full bg-blue-600 text-white p-4 rounded-xl font-semibold hover:bg-blue-700 disabled:bg-gray-400 flex items-center justify-center gap-2"
           >
             {loading ? (
               <>
-                <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                Analyse de densité urbaine en cours...
+                <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                Calcul de l'itinéraire...
               </>
             ) : (
               <>
-                <Search className="w-4 h-4" />
-                Calculer l'itinéraire optimal
+                <Search className="w-5 h-5" />
+                Optimiser l'itinéraire
               </>
             )}
           </button>
 
           {error && (
-            <div className="mt-3 bg-red-50 border-l-4 border-red-500 p-3 rounded">
+            <div className="mt-4 bg-red-50 border-l-4 border-red-500 p-4 rounded">
               <div className="flex items-center gap-2">
                 <AlertTriangle className="w-5 h-5 text-red-500" />
-                <span className="text-sm text-red-700">{error}</span>
+                <span className="text-red-700">{error}</span>
               </div>
             </div>
           )}
         </header>
 
-        {result && (
-          <div className="grid lg:grid-cols-4 gap-4">
+        {routes.length > 0 && (
+          <div className="grid lg:grid-cols-3 gap-6">
             <div className="space-y-4">
-              {routes.length > 0 ? (
-                routes.map((route, idx) => (
-                  <RouteCard
-                    key={idx}
-                    route={route}
-                    selected={selectedRoute === route}
-                    onClick={() => setSelectedRoute(route)}
-                  />
-                ))
-              ) : (
-                <div className="bg-yellow-50 border-l-4 border-yellow-500 p-4 rounded">
-                  <div className="flex items-center gap-2">
-                    <AlertTriangle className="w-5 h-5 text-yellow-600" />
-                    <span className="text-sm text-yellow-700">Aucun itinéraire disponible</span>
-                  </div>
-                </div>
-              )}
-
-              <WarningsPanel warnings={result.warnings} />
-              <MetadataPanel metadata={result.metadata} />
+              {routes.map(route => (
+                <RouteCardModern
+                  key={route.id}
+                  route={route}
+                  selected={selectedRoute?.id === route.id}
+                  onClick={() => setSelectedRoute(route)}
+                />
+              ))}
             </div>
 
-            <div className="lg:col-span-3 space-y-4">
-              <div className="bg-white rounded-xl p-4 shadow-lg" style={{height: '450px'}}>
-                <TomTomMap 
-                  route={selectedRoute} 
-                  origin={result.origin}
-                  destination={result.destination}
-                />
+            <div className="lg:col-span-2 space-y-6">
+              <div className="bg-white rounded-2xl p-4 shadow-lg" style={{height: '500px'}}>
+                <LeafletMap route={selectedRoute} allRoutes={routes} />
               </div>
-
-              <div className="grid md:grid-cols-2 gap-4">
-                <TrafficInfo 
-                  traffic={result.origin?.traffic} 
-                  label="Origine" 
-                  density={result.origin?.density}
-                />
-                <TrafficInfo 
-                  traffic={result.destination?.traffic} 
-                  label="Destination"
-                  density={result.destination?.density}
-                />
-              </div>
-
-              {selectedRoute && <RouteSteps route={selectedRoute} />}
+              {selectedRoute && <DetailsPanel route={selectedRoute} />}
             </div>
           </div>
         )}
