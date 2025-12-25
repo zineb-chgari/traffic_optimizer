@@ -16,7 +16,7 @@ pipeline {
         stage('Setup Environment') {
             steps {
                 script {
-                    // Récupérer la clé TomTom avec gestion d'erreur
+                    // Récupérer UNIQUEMENT la clé TomTom
                     try {
                         withCredentials([string(credentialsId: 'tomtom-api-key', variable: 'TOMTOM_KEY')]) {
                             env.TOMTOM_API_KEY = TOMTOM_KEY
@@ -25,6 +25,7 @@ pipeline {
                     } catch (Exception e) {
                         env.TOMTOM_API_KEY = 'YOUR_TOMTOM_API_KEY_HERE'
                         echo "⚠ WARNING: TomTom credential not found, using placeholder"
+                        echo "⚠ Backend WILL CRASH without a valid API key!"
                         echo "Please create credential 'tomtom-api-key' in Jenkins"
                     }
                 }
@@ -55,6 +56,7 @@ pipeline {
                         echo Checking TomTom API Key...
                         if "${env.TOMTOM_API_KEY}"=="YOUR_TOMTOM_API_KEY_HERE" (
                             echo WARNING: TomTom API Key not configured properly!
+                            echo Backend will crash without a valid API key!
                             echo Please create credential 'tomtom-api-key' in Jenkins
                         ) else (
                             echo TomTom API Key configured ✓
@@ -210,27 +212,6 @@ pipeline {
             }
         }
         
-        stage('Create TomTom Secret') {
-            steps {
-                script {
-                    bat """
-                        echo ==========================================
-                        echo === CREATING TOMTOM API SECRET ===
-                        echo ==========================================
-                        
-                        echo Creating Kubernetes secret for TomTom API Key...
-                        kubectl create secret generic tomtom-api-secret ^
-                            --from-literal=TOMTOM_API_KEY=${env.TOMTOM_API_KEY} ^
-                            --dry-run=client -o yaml | kubectl apply -f -
-                        
-                        echo.
-                        echo Secret created successfully!
-                        kubectl get secret tomtom-api-secret
-                    """
-                }
-            }
-        }
-        
         stage('Verify Cluster Connection') {
             steps {
                 bat '''
@@ -252,10 +233,6 @@ pipeline {
                     echo.
                     echo System Pods:
                     kubectl get pods -n kube-system
-                    
-                    echo.
-                    echo Secrets:
-                    kubectl get secrets
                     
                     echo.
                     echo Cluster verification complete!
@@ -346,10 +323,6 @@ pipeline {
                     echo.
                     echo Current events:
                     kubectl get events --all-namespaces --sort-by=.metadata.creationTimestamp | findstr /V "Normal" || echo "No warning events"
-                    
-                    echo.
-                    echo Secrets available:
-                    kubectl get secrets
                 '''
             }
         }
@@ -367,7 +340,7 @@ pipeline {
                             set TF_VAR_tomtom_api_key=${env.TOMTOM_API_KEY}
                             
                             echo Applying Terraform configuration...
-                            terraform apply -auto-approve
+                            terraform apply -auto-approve -var="tomtom_api_key=${env.TOMTOM_API_KEY}"
                             
                             echo.
                             echo Terraform deployment initiated!
@@ -398,6 +371,9 @@ pipeline {
                             echo WARNING: Backend deployment timeout!
                             kubectl get pods -l app=backend
                             kubectl describe pods -l app=backend
+                            echo.
+                            echo === BACKEND POD LOGS ===
+                            kubectl logs -l app=backend --tail=100 --all-containers=true || echo "Cannot fetch logs"
                         )
                         
                         echo.
@@ -430,7 +406,18 @@ pipeline {
                         
                         echo.
                         echo Waiting for Backend pods...
-                        kubectl wait --for=condition=ready pod -l app=backend --timeout=180s || echo Backend pods not ready yet
+                        kubectl wait --for=condition=ready pod -l app=backend --timeout=180s || (
+                            echo Backend pods not ready yet
+                            echo.
+                            echo === CHECKING BACKEND POD STATUS ===
+                            kubectl get pods -l app=backend
+                            echo.
+                            echo === BACKEND POD EVENTS ===
+                            kubectl get events --field-selector involvedObject.kind=Pod --sort-by=.metadata.creationTimestamp | findstr backend
+                            echo.
+                            echo === BACKEND POD LOGS ===
+                            kubectl logs -l app=backend --tail=50 --all-containers=true || echo "Cannot fetch logs"
+                        )
                         
                         echo.
                         echo Waiting for Frontend pods...
@@ -481,8 +468,8 @@ pipeline {
                     kubectl logs -l app=redis --tail=20 --all-containers=true 2>nul || echo No Redis logs available yet
                     
                     echo.
-                    echo === Backend Logs (last 30 lines) ===
-                    kubectl logs -l app=backend --tail=30 --all-containers=true 2>nul || echo No Backend logs available yet
+                    echo === Backend Logs (last 50 lines) ===
+                    kubectl logs -l app=backend --tail=50 --all-containers=true 2>nul || echo No Backend logs available yet
                     
                     echo.
                     echo === Frontend Logs (last 20 lines) ===
@@ -501,8 +488,8 @@ pipeline {
                     kubectl exec -it deployment/backend -- wget -q -O- http://localhost:3000/health 2>nul || echo Backend health check failed
                     
                     echo.
-                    echo Checking TomTom API configuration in backend...
-                    kubectl exec -it deployment/backend -- printenv | findstr TOMTOM 2>nul || echo TomTom env var check failed
+                    echo Checking API Keys in backend...
+                    kubectl exec -it deployment/backend -- printenv | findstr API_KEY 2>nul || echo API key env var check failed
                 '''
             }
         }
@@ -540,11 +527,11 @@ pipeline {
         stage('Save Deployment Info') {
             steps {
                 script {
-                    // Sauvegarder les informations de déploiement pour le post-processing
                     bat '''
                         echo Saving deployment information...
                         kubectl get svc > deployment-services.txt 2>&1 || echo "Could not save services info"
                         kubectl get pods -o wide > deployment-pods.txt 2>&1 || echo "Could not save pods info"
+                        kubectl logs -l app=backend --tail=100 > backend-logs.txt 2>&1 || echo "Could not save backend logs"
                     '''
                 }
             }
@@ -576,11 +563,10 @@ pipeline {
                 echo ''
                 echo 'FOR BACKEND:'
                 echo '  kubectl port-forward service/backend-service 3000:3000'
-                echo '  Then open: http://localhost:3000'
+                echo '  Then open: http://localhost:3000/health'
                 echo ''
                 echo '=========================================='
                 
-                // Essayer d'afficher les infos, mais ne pas échouer si kubectl n'est plus accessible
                 script {
                     try {
                         bat '''
@@ -603,15 +589,30 @@ pipeline {
                 echo '✗✗✗ PIPELINE FAILED ✗✗✗'
                 echo '=========================================='
                 
-                // Diagnostics en cas d'échec
                 script {
                     try {
                         bat '''
                             echo === FAILURE DIAGNOSTICS ===
                             kubectl config get-contexts 2>nul || echo Cannot get contexts
+                            echo.
+                            echo === ALL PODS STATUS ===
                             kubectl get pods --all-namespaces -o wide 2>nul || echo Cannot get pods
+                            echo.
+                            echo === BACKEND PODS DETAILS ===
+                            kubectl describe pods -l app=backend 2>nul || echo Cannot describe backend pods
+                            echo.
+                            echo === BACKEND LOGS ===
+                            kubectl logs -l app=backend --tail=100 --all-containers=true 2>nul || echo Cannot get backend logs
+                            echo.
+                            echo === IMAGES IN CLUSTER ===
                             docker exec k8s-terraform-control-plane crictl images 2>nul || echo Cannot access cluster
+                            echo.
+                            echo === LOCAL DOCKER IMAGES ===
                             docker images | findstr "transport redis" || echo No images found
+                            echo.
+                            echo === SECRETS ===
+                            kubectl get secrets 2>nul || echo Cannot get secrets
+                            kubectl describe secret api-keys 2>nul || echo Cannot describe api-keys secret
                             echo.
                             echo Check the logs above for details
                         '''

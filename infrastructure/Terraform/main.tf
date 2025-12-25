@@ -11,10 +11,19 @@ provider "kubernetes" {
   config_path = "~/.kube/config"
 }
 
+# ==================== VARIABLES ====================
+variable "tomtom_api_key" {
+  description = "TomTom API Key from Jenkins"
+  type        = string
+  default     = "YOUR_TOMTOM_API_KEY_HERE"
+  sensitive   = true
+}
+
 # ==================== SECRETS ====================
 resource "kubernetes_secret_v1" "redis_credentials" {
   metadata {
-    name = "redis-credentials"
+    name      = "redis-credentials"
+    namespace = "default"
   }
 
   data = {
@@ -24,14 +33,15 @@ resource "kubernetes_secret_v1" "redis_credentials" {
   type = "Opaque"
 }
 
+# ✅ SECRET CORRIGÉ: Utilise la variable Terraform au lieu de la valeur codée en dur
 resource "kubernetes_secret_v1" "api_keys" {
   metadata {
-    name = "api-keys"
+    name      = "api-keys"
+    namespace = "default"
   }
 
   data = {
-    ors_api_key    = "eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6IjIwNjAxYzVlZmFlNjQ1OGZiOTY3ODUxNDg3NTY2MjBlIiwiaCI6Im11cm11cjY0In0="
-    tomtom_api_key = "YOUR_TOMTOM_API_KEY"  # ⚠️ Remplacez par votre vraie clé
+    tomtom_api_key = var.tomtom_api_key
   }
 
   type = "Opaque"
@@ -44,6 +54,7 @@ resource "kubernetes_deployment_v1" "redis" {
     labels = {
       app = "redis"
     }
+    namespace = "default"
   }
 
   spec {
@@ -71,6 +82,7 @@ resource "kubernetes_deployment_v1" "redis" {
           port {
             container_port = 6379
             name           = "redis"
+            protocol       = "TCP"
           }
 
           command = ["redis-server"]
@@ -84,6 +96,7 @@ resource "kubernetes_deployment_v1" "redis" {
             initial_delay_seconds = 30
             period_seconds        = 10
             timeout_seconds       = 5
+            failure_threshold     = 3
           }
 
           readiness_probe {
@@ -93,6 +106,7 @@ resource "kubernetes_deployment_v1" "redis" {
             initial_delay_seconds = 5
             period_seconds        = 5
             timeout_seconds       = 3
+            failure_threshold     = 3
           }
 
           resources {
@@ -117,6 +131,7 @@ resource "kubernetes_service_v1" "redis" {
     labels = {
       app = "redis"
     }
+    namespace = "default"
   }
 
   spec {
@@ -127,6 +142,7 @@ resource "kubernetes_service_v1" "redis" {
     port {
       port        = 6379
       target_port = 6379
+      protocol    = "TCP"
       name        = "redis"
     }
 
@@ -141,6 +157,7 @@ resource "kubernetes_deployment_v1" "backend" {
     labels = {
       app = "backend"
     }
+    namespace = "default"
   }
 
   spec {
@@ -168,25 +185,16 @@ resource "kubernetes_deployment_v1" "backend" {
           port {
             container_port = 3000
             name           = "http"
+            protocol       = "TCP"
           }
 
-          # ✅ CORRECTION: URL Redis avec authentification
+          # ✅ Variables d'environnement
           env {
             name  = "REDIS_URL"
             value = "redis://:monsecret@redis-service:6379"
           }
 
-          # Variables d'environnement pour les API keys
-          env {
-            name = "ORS_API_KEY"
-            value_from {
-              secret_key_ref {
-                name = kubernetes_secret_v1.api_keys.metadata[0].name
-                key  = "ors_api_key"
-              }
-            }
-          }
-
+          # ✅ CORRECTION: Seulement TOMTOM_API_KEY (ORS supprimé)
           env {
             name = "TOMTOM_API_KEY"
             value_from {
@@ -202,11 +210,17 @@ resource "kubernetes_deployment_v1" "backend" {
             value = "3000"
           }
 
+          env {
+            name  = "NODE_ENV"
+            value = "production"
+          }
+
           # Health checks
           liveness_probe {
             http_get {
-              path = "/health"
-              port = 3000
+              path   = "/health"
+              port   = 3000
+              scheme = "HTTP"
             }
             initial_delay_seconds = 30
             period_seconds        = 10
@@ -216,8 +230,9 @@ resource "kubernetes_deployment_v1" "backend" {
 
           readiness_probe {
             http_get {
-              path = "/health"
-              port = 3000
+              path   = "/health"
+              port   = 3000
+              scheme = "HTTP"
             }
             initial_delay_seconds = 10
             period_seconds        = 5
@@ -253,6 +268,7 @@ resource "kubernetes_service_v1" "backend" {
     labels = {
       app = "backend"
     }
+    namespace = "default"
   }
 
   spec {
@@ -264,6 +280,7 @@ resource "kubernetes_service_v1" "backend" {
       port        = 3000
       target_port = 3000
       node_port   = 30002
+      protocol    = "TCP"
       name        = "http"
     }
 
@@ -278,6 +295,7 @@ resource "kubernetes_deployment_v1" "frontend" {
     labels = {
       app = "frontend"
     }
+    namespace = "default"
   }
 
   spec {
@@ -305,9 +323,9 @@ resource "kubernetes_deployment_v1" "frontend" {
           port {
             container_port = 80
             name           = "http"
+            protocol       = "TCP"
           }
 
-          # ⚠️ À adapter selon votre configuration
           env {
             name  = "API_URL"
             value = "http://backend-service:3000"
@@ -316,22 +334,26 @@ resource "kubernetes_deployment_v1" "frontend" {
           # Health checks
           liveness_probe {
             http_get {
-              path = "/"
-              port = 80
+              path   = "/"
+              port   = 80
+              scheme = "HTTP"
             }
             initial_delay_seconds = 10
             period_seconds        = 10
             timeout_seconds       = 5
+            failure_threshold     = 3
           }
 
           readiness_probe {
             http_get {
-              path = "/"
-              port = 80
+              path   = "/"
+              port   = 80
+              scheme = "HTTP"
             }
             initial_delay_seconds = 5
             period_seconds        = 5
             timeout_seconds       = 3
+            failure_threshold     = 3
           }
 
           resources {
@@ -362,6 +384,7 @@ resource "kubernetes_service_v1" "frontend" {
     labels = {
       app = "frontend"
     }
+    namespace = "default"
   }
 
   spec {
@@ -373,6 +396,7 @@ resource "kubernetes_service_v1" "frontend" {
       port        = 80
       target_port = 80
       node_port   = 30001
+      protocol    = "TCP"
       name        = "http"
     }
 
@@ -394,4 +418,14 @@ output "frontend_nodeport" {
 output "redis_service" {
   value       = "redis-service:6379"
   description = "Service Redis interne"
+}
+
+output "backend_url" {
+  value       = "http://localhost:30002"
+  description = "URL d'accès au backend (après port-forward)"
+}
+
+output "frontend_url" {
+  value       = "http://localhost:30001"
+  description = "URL d'accès au frontend (après port-forward)"
 }

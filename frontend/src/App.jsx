@@ -9,14 +9,15 @@ import {
   Activity,
   CheckCircle,
   Info,
-  ArrowRight,
   Footprints,
   RefreshCw,
-  Zap
+  Zap,
+  Users,
+  Building2
 } from "lucide-react";
 
 const API_URL = "http://localhost:3000";
-const TOMTOM_API_KEY = "Cjx7i2N9ESmF9Sq8Bw6QtZ4FRJkCQMLy";
+const TOMTOM_API_KEY = "YOUR_API_KEY_HERE"; // À remplacer par variable d'environnement
 
 function TomTomMap({ route, origin, destination }) {
   const mapRef = useRef(null);
@@ -168,6 +169,30 @@ function TomTomMap({ route, origin, destination }) {
   );
 }
 
+function DensityIndicator({ density }) {
+  if (!density) return null;
+
+  const getColor = (type) => {
+    const colors = {
+      'urban': 'text-red-600 bg-red-50',
+      'suburban': 'text-orange-600 bg-orange-50',
+      'rural': 'text-green-600 bg-green-50'
+    };
+    return colors[type] || 'text-gray-600 bg-gray-50';
+  };
+
+  const getIcon = (type) => {
+    return type === 'urban' ? <Building2 className="w-4 h-4" /> : <Users className="w-4 h-4" />;
+  };
+
+  return (
+    <div className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-medium ${getColor(density.zoneType)}`}>
+      {getIcon(density.zoneType)}
+      <span>Densité: {density.urbanScore}/100</span>
+    </div>
+  );
+}
+
 function RouteSteps({ route }) {
   if (!route) return null;
 
@@ -184,32 +209,60 @@ function RouteSteps({ route }) {
     color: "bg-gray-50 border-gray-200"
   });
 
-  const transitLines = route.routeId.split('-');
-  transitLines.forEach((line, idx) => {
-    steps.push({
-      type: 'transit',
-      icon: <Bus className="w-5 h-5 text-white" />,
-      title: `Prenez ${line}`,
-      subtitle: `${Math.round(route.transitDuration / 60)} min de trajet`,
-      details: `De ${idx === 0 ? route.originStop.name : 'Arrêt de correspondance'} à ${idx === transitLines.length - 1 ? route.destStop.name : 'Arrêt de correspondance'}`,
-      duration: route.transitDuration / transitLines.length,
-      color: "bg-blue-500 text-white",
-      lineColor: "border-blue-500",
-      badgeText: line
-    });
-
-    if (idx < transitLines.length - 1) {
+  if (route.routeSegments && route.routeSegments.length > 0) {
+    route.routeSegments.forEach((segment, idx) => {
       steps.push({
-        type: 'transfer',
-        icon: <RefreshCw className="w-5 h-5 text-orange-600" />,
-        title: "Correspondance",
-        subtitle: `Changez de ligne (3 min)`,
-        details: `Vers ${transitLines[idx + 1]}`,
-        duration: 180,
-        color: "bg-orange-50 border-orange-300"
+        type: 'transit',
+        icon: <Bus className="w-5 h-5 text-white" />,
+        title: `Prenez ${segment.line}`,
+        subtitle: `${Math.round(segment.duration / 60)} min de trajet`,
+        details: `De ${segment.from} à ${segment.to}`,
+        duration: segment.duration,
+        color: "bg-blue-500 text-white",
+        lineColor: "border-blue-500",
+        badgeText: segment.line
       });
-    }
-  });
+
+      if (idx < route.routeSegments.length - 1) {
+        steps.push({
+          type: 'transfer',
+          icon: <RefreshCw className="w-5 h-5 text-orange-600" />,
+          title: "Correspondance",
+          subtitle: `Changez de ligne (3 min)`,
+          details: `Vers ${route.routeSegments[idx + 1].line}`,
+          duration: 180,
+          color: "bg-orange-50 border-orange-300"
+        });
+      }
+    });
+  } else {
+    const transitLines = route.routeId.split('-');
+    transitLines.forEach((line, idx) => {
+      steps.push({
+        type: 'transit',
+        icon: <Bus className="w-5 h-5 text-white" />,
+        title: `Prenez ${line}`,
+        subtitle: `${Math.round(route.transitDuration / 60)} min de trajet`,
+        details: `De ${idx === 0 ? route.originStop.name : 'Arrêt de correspondance'} à ${idx === transitLines.length - 1 ? route.destStop.name : 'Arrêt de correspondance'}`,
+        duration: route.transitDuration / transitLines.length,
+        color: "bg-blue-500 text-white",
+        lineColor: "border-blue-500",
+        badgeText: line
+      });
+
+      if (idx < transitLines.length - 1) {
+        steps.push({
+          type: 'transfer',
+          icon: <RefreshCw className="w-5 h-5 text-orange-600" />,
+          title: "Correspondance",
+          subtitle: `Changez de ligne (3 min)`,
+          details: `Vers ${transitLines[idx + 1]}`,
+          duration: 180,
+          color: "bg-orange-50 border-orange-300"
+        });
+      }
+    });
+  }
 
   steps.push({
     type: 'walk',
@@ -320,6 +373,12 @@ function RouteCard({ route, selected, onClick }) {
         </div>
       </div>
 
+      {route.densityAnalysis && (
+        <div className="mb-3">
+          <DensityIndicator density={route.densityAnalysis} />
+        </div>
+      )}
+
       <div className="grid grid-cols-3 gap-2 mb-3 text-center">
         <div>
           <Clock className="w-4 h-4 mx-auto text-gray-400 mb-1" />
@@ -351,14 +410,14 @@ function RouteCard({ route, selected, onClick }) {
         )}
         <div className="flex items-center gap-1 text-gray-600">
           <Activity className="w-3 h-3 text-blue-500" />
-          <span>TomTom Data</span>
+          <span>Optimisé selon densité urbaine</span>
         </div>
       </div>
     </div>
   );
 }
 
-function TrafficInfo({ traffic, label }) {
+function TrafficInfo({ traffic, label, density }) {
   if (!traffic) return null;
 
   return (
@@ -367,6 +426,12 @@ function TrafficInfo({ traffic, label }) {
         <Zap className="w-5 h-5 text-orange-600" />
         <h3 className="font-bold text-gray-800">Trafic - {label}</h3>
       </div>
+      
+      {density && (
+        <div className="mb-3">
+          <DensityIndicator density={density} />
+        </div>
+      )}
       
       <div className="grid grid-cols-2 gap-3 text-sm">
         <div>
@@ -511,7 +576,7 @@ export default function TransportOptimizerApp() {
             </div>
             <div>
               <h1 className="text-2xl font-bold text-gray-800">Transport Optimizer</h1>
-              <p className="text-sm text-gray-600">Données en temps réel via TomTom API</p>
+              <p className="text-sm text-gray-600">Optimisation basée sur densité urbaine & trafic temps réel</p>
             </div>
           </div>
 
@@ -546,12 +611,12 @@ export default function TransportOptimizerApp() {
             {loading ? (
               <>
                 <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                Calcul en cours...
+                Analyse de densité urbaine en cours...
               </>
             ) : (
               <>
                 <Search className="w-4 h-4" />
-                Calculer l'itinéraire
+                Calculer l'itinéraire optimal
               </>
             )}
           </button>
@@ -601,8 +666,16 @@ export default function TransportOptimizerApp() {
               </div>
 
               <div className="grid md:grid-cols-2 gap-4">
-                <TrafficInfo traffic={result.origin?.traffic} label="Origine" />
-                <TrafficInfo traffic={result.destination?.traffic} label="Destination" />
+                <TrafficInfo 
+                  traffic={result.origin?.traffic} 
+                  label="Origine" 
+                  density={result.origin?.density}
+                />
+                <TrafficInfo 
+                  traffic={result.destination?.traffic} 
+                  label="Destination"
+                  density={result.destination?.density}
+                />
               </div>
 
               {selectedRoute && <RouteSteps route={selectedRoute} />}
