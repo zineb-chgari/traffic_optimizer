@@ -341,7 +341,7 @@ pipeline {
                     
                     echo.
                     echo Node details:
-                    kubectl describe node k8s-terraform-control-plane | findstr "Allocatable" -A 5
+                    kubectl describe node k8s-terraform-control-plane | findstr "Allocatable"
                     
                     echo.
                     echo Current events:
@@ -536,68 +536,88 @@ pipeline {
                 '''
             }
         }
+        
+        stage('Save Deployment Info') {
+            steps {
+                script {
+                    // Sauvegarder les informations de déploiement pour le post-processing
+                    bat '''
+                        echo Saving deployment information...
+                        kubectl get svc > deployment-services.txt 2>&1 || echo "Could not save services info"
+                        kubectl get pods -o wide > deployment-pods.txt 2>&1 || echo "Could not save pods info"
+                    '''
+                }
+            }
+        }
     }
     
     post {
         always {
             script {
-                node {
-                    echo 'Pipeline execution completed - Cleaning up...'
-                    bat 'docker system prune -f || exit 0'
-                }
+                echo 'Pipeline execution completed - Cleaning up...'
+                bat 'docker system prune -f || exit 0'
             }
         }
         
         success {
             script {
-                node {
-                    echo ''
-                    echo '=========================================='
-                    echo '✓✓✓ PIPELINE SUCCEEDED ✓✓✓'
-                    echo '=========================================='
-                    bat '''
-                        echo.
-                        echo ==========================================
-                        echo === HOW TO ACCESS YOUR APPLICATION ===
-                        echo ==========================================
-                        echo.
-                        echo Your application has been successfully deployed!
-                        echo.
-                        echo To access the services, open a NEW terminal and run:
-                        echo.
-                        echo   FOR FRONTEND:
-                        echo   kubectl port-forward service/frontend-service 8080:80
-                        echo   Then open: http://localhost:8080
-                        echo.
-                        echo   FOR BACKEND:
-                        echo   kubectl port-forward service/backend-service 3000:3000
-                        echo   Then open: http://localhost:3000
-                        echo.
-                        echo ==========================================
-                        kubectl get svc
-                        echo.
-                        kubectl get pods -o wide
-                    '''
+                echo ''
+                echo '=========================================='
+                echo '✓✓✓ PIPELINE SUCCEEDED ✓✓✓'
+                echo '=========================================='
+                echo ''
+                echo 'Your application has been successfully deployed!'
+                echo ''
+                echo 'To access the services, open a NEW terminal and run:'
+                echo ''
+                echo 'FOR FRONTEND:'
+                echo '  kubectl port-forward service/frontend-service 8080:80'
+                echo '  Then open: http://localhost:8080'
+                echo ''
+                echo 'FOR BACKEND:'
+                echo '  kubectl port-forward service/backend-service 3000:3000'
+                echo '  Then open: http://localhost:3000'
+                echo ''
+                echo '=========================================='
+                
+                // Essayer d'afficher les infos, mais ne pas échouer si kubectl n'est plus accessible
+                script {
+                    try {
+                        bat '''
+                            kubectl get svc 2>nul || type deployment-services.txt 2>nul || echo "Service info not available"
+                            echo.
+                            kubectl get pods -o wide 2>nul || type deployment-pods.txt 2>nul || echo "Pod info not available"
+                        '''
+                    } catch (Exception e) {
+                        echo "Note: Could not fetch live cluster info (this is normal)"
+                        echo "Deployment was successful!"
+                    }
                 }
             }
         }
         
         failure {
             script {
-                node {
-                    echo ''
-                    echo '=========================================='
-                    echo '✗✗✗ PIPELINE FAILED ✗✗✗'
-                    echo '=========================================='
-                    bat '''
-                        echo === FAILURE DIAGNOSTICS ===
-                        kubectl config get-contexts || echo Cannot get contexts
-                        kubectl get pods --all-namespaces -o wide || echo Cannot get pods
-                        docker exec k8s-terraform-control-plane crictl images 2>nul || echo Cannot access cluster
-                        docker images | findstr "transport redis" || echo No images found
-                        echo.
-                        echo Check the logs above for details
-                    ''' || echo "Diagnostics failed - check earlier stages"
+                echo ''
+                echo '=========================================='
+                echo '✗✗✗ PIPELINE FAILED ✗✗✗'
+                echo '=========================================='
+                
+                // Diagnostics en cas d'échec
+                script {
+                    try {
+                        bat '''
+                            echo === FAILURE DIAGNOSTICS ===
+                            kubectl config get-contexts 2>nul || echo Cannot get contexts
+                            kubectl get pods --all-namespaces -o wide 2>nul || echo Cannot get pods
+                            docker exec k8s-terraform-control-plane crictl images 2>nul || echo Cannot access cluster
+                            docker images | findstr "transport redis" || echo No images found
+                            echo.
+                            echo Check the logs above for details
+                        '''
+                    } catch (Exception e) {
+                        echo "Could not gather diagnostics - check earlier stages for errors"
+                    }
                 }
             }
         }
