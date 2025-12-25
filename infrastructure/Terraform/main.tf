@@ -19,6 +19,20 @@ variable "tomtom_api_key" {
   sensitive   = true
 }
 
+variable "opencage_api_key" {
+  description = "OpenCage API Key from Jenkins"
+  type        = string
+  default     = "YOUR_OPENCAGE_API_KEY_HERE"
+  sensitive   = true
+}
+
+variable "ors_api_key" {
+  description = "OpenRouteService API Key from Jenkins"
+  type        = string
+  default     = "YOUR_ORS_API_KEY_HERE"
+  sensitive   = true
+}
+
 # ==================== SECRETS ====================
 resource "kubernetes_secret_v1" "redis_credentials" {
   metadata {
@@ -33,7 +47,7 @@ resource "kubernetes_secret_v1" "redis_credentials" {
   type = "Opaque"
 }
 
-# ✅ SECRET CORRIGÉ: Utilise la variable Terraform au lieu de la valeur codée en dur
+# ✅ SECRET CORRIGÉ: Toutes les clés API
 resource "kubernetes_secret_v1" "api_keys" {
   metadata {
     name      = "api-keys"
@@ -41,7 +55,9 @@ resource "kubernetes_secret_v1" "api_keys" {
   }
 
   data = {
-    tomtom_api_key = var.tomtom_api_key
+    tomtom_api_key   = var.tomtom_api_key
+    opencage_api_key = var.opencage_api_key
+    ors_api_key      = var.ors_api_key
   }
 
   type = "Opaque"
@@ -188,19 +204,38 @@ resource "kubernetes_deployment_v1" "backend" {
             protocol       = "TCP"
           }
 
-          # ✅ Variables d'environnement
+          # ✅ TOUTES LES VARIABLES D'ENVIRONNEMENT
           env {
             name  = "REDIS_URL"
             value = "redis://:monsecret@redis-service:6379"
           }
 
-          # ✅ CORRECTION: Seulement TOMTOM_API_KEY (ORS supprimé)
           env {
             name = "TOMTOM_API_KEY"
             value_from {
               secret_key_ref {
                 name = kubernetes_secret_v1.api_keys.metadata[0].name
                 key  = "tomtom_api_key"
+              }
+            }
+          }
+
+          env {
+            name = "OPENCAGE_API_KEY"
+            value_from {
+              secret_key_ref {
+                name = kubernetes_secret_v1.api_keys.metadata[0].name
+                key  = "opencage_api_key"
+              }
+            }
+          }
+
+          env {
+            name = "ORS_API_KEY"
+            value_from {
+              secret_key_ref {
+                name = kubernetes_secret_v1.api_keys.metadata[0].name
+                key  = "ors_api_key"
               }
             }
           }
@@ -213,6 +248,36 @@ resource "kubernetes_deployment_v1" "backend" {
           env {
             name  = "NODE_ENV"
             value = "production"
+          }
+
+          env {
+            name  = "CACHE_TTL"
+            value = "3600"
+          }
+
+          env {
+            name  = "MAX_WALKING_DISTANCE"
+            value = "800"
+          }
+
+          env {
+            name  = "TRANSFER_PENALTY"
+            value = "180"
+          }
+
+          env {
+            name  = "WALKING_SPEED"
+            value = "1.4"
+          }
+
+          env {
+            name  = "REQUEST_TIMEOUT"
+            value = "20000"
+          }
+
+          env {
+            name  = "ALLOWED_ORIGINS"
+            value = "http://localhost:3001,http://localhost,http://localhost:8080"
           }
 
           # Health checks

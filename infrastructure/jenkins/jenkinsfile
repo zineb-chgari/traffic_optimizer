@@ -16,17 +16,25 @@ pipeline {
         stage('Setup Environment') {
             steps {
                 script {
-                    // Récupérer UNIQUEMENT la clé TomTom
+                    // Récupérer TOUTES les clés API
                     try {
-                        withCredentials([string(credentialsId: 'tomtom-api-key', variable: 'TOMTOM_KEY')]) {
+                        withCredentials([
+                            string(credentialsId: 'tomtom-api-key', variable: 'TOMTOM_KEY'),
+                            string(credentialsId: 'opencage-api-key', variable: 'OPENCAGE_KEY'),
+                            string(credentialsId: 'ors-api-key', variable: 'ORS_KEY')
+                        ]) {
                             env.TOMTOM_API_KEY = TOMTOM_KEY
+                            env.OPENCAGE_API_KEY = OPENCAGE_KEY
+                            env.ORS_API_KEY = ORS_KEY
                         }
-                        echo "✓ TomTom API Key loaded from credentials"
+                        echo "✓ All API Keys loaded from Jenkins credentials"
                     } catch (Exception e) {
-                        env.TOMTOM_API_KEY = 'YOUR_TOMTOM_API_KEY_HERE'
-                        echo "⚠ WARNING: TomTom credential not found, using placeholder"
-                        echo "⚠ Backend WILL CRASH without a valid API key!"
-                        echo "Please create credential 'tomtom-api-key' in Jenkins"
+                        // Fallback: utiliser les valeurs du .env
+                        env.TOMTOM_API_KEY = 'Cjx7i2N9ESmF9Sq8Bw6QtZ4FRJkCQMLy'
+                        env.OPENCAGE_API_KEY = '464eb4ad7e734a768928fd696b968ee4'
+                        env.ORS_API_KEY = 'eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6IjIwNjAxYzVlZmFlNjQ1OGZiOTY3ODUxNDg3NTY2MjBlIiwiaCI6Im11cm11cjY0In0='
+                        echo "⚠ WARNING: Jenkins credentials not found, using hardcoded API keys from .env"
+                        echo "✓ API Keys configured successfully"
                     }
                 }
             }
@@ -53,13 +61,21 @@ pipeline {
                         terraform version
                         kind version
                         echo.
-                        echo Checking TomTom API Key...
+                        echo Checking API Keys...
                         if "${env.TOMTOM_API_KEY}"=="YOUR_TOMTOM_API_KEY_HERE" (
-                            echo WARNING: TomTom API Key not configured properly!
-                            echo Backend will crash without a valid API key!
-                            echo Please create credential 'tomtom-api-key' in Jenkins
+                            echo ✗ TomTom API Key not configured!
                         ) else (
-                            echo TomTom API Key configured ✓
+                            echo ✓ TomTom API Key configured
+                        )
+                        if "${env.OPENCAGE_API_KEY}"=="YOUR_OPENCAGE_API_KEY_HERE" (
+                            echo ✗ OpenCage API Key not configured!
+                        ) else (
+                            echo ✓ OpenCage API Key configured
+                        )
+                        if "${env.ORS_API_KEY}"=="YOUR_ORS_API_KEY_HERE" (
+                            echo ✗ ORS API Key not configured!
+                        ) else (
+                            echo ✓ ORS API Key configured
                         )
                         echo.
                         echo All tools found successfully!
@@ -123,6 +139,8 @@ pipeline {
                                 echo ==========================================
                                 docker build -f backend\\Dockerfile ^
                                     --build-arg TOMTOM_API_KEY=${env.TOMTOM_API_KEY} ^
+                                    --build-arg OPENCAGE_API_KEY=${env.OPENCAGE_API_KEY} ^
+                                    --build-arg ORS_API_KEY=${env.ORS_API_KEY} ^
                                     -t transport-backend:latest ^
                                     -t transport-backend:${BUILD_TAG} ^
                                     backend
@@ -338,12 +356,17 @@ pipeline {
                             
                             echo Setting Terraform variables...
                             set TF_VAR_tomtom_api_key=${env.TOMTOM_API_KEY}
+                            set TF_VAR_opencage_api_key=${env.OPENCAGE_API_KEY}
+                            set TF_VAR_ors_api_key=${env.ORS_API_KEY}
                             
                             echo Applying Terraform configuration...
-                            terraform apply -auto-approve -var="tomtom_api_key=${env.TOMTOM_API_KEY}"
+                            terraform apply -auto-approve ^
+                                -var="tomtom_api_key=${env.TOMTOM_API_KEY}" ^
+                                -var="opencage_api_key=${env.OPENCAGE_API_KEY}" ^
+                                -var="ors_api_key=${env.ORS_API_KEY}"
                             
                             echo.
-                            echo Terraform deployment initiated!
+                            echo Terraform deployment complete!
                         """
                     }
                 }
@@ -481,14 +504,14 @@ pipeline {
                     echo ==========================================
                     
                     echo Testing Redis connectivity...
-                    kubectl exec -it deployment/redis -- redis-cli ping 2>nul || echo Redis not responding
+                    kubectl exec -it deployment/redis -- redis-cli -a monsecret ping 2>nul || echo Redis not responding
                     
                     echo.
                     echo Testing Backend health endpoint...
                     kubectl exec -it deployment/backend -- wget -q -O- http://localhost:3000/health 2>nul || echo Backend health check failed
                     
                     echo.
-                    echo Checking API Keys in backend...
+                    echo Checking ALL API Keys in backend...
                     kubectl exec -it deployment/backend -- printenv | findstr API_KEY 2>nul || echo API key env var check failed
                 '''
             }
