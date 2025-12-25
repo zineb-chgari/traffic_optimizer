@@ -8,15 +8,16 @@ import winston from 'winston';
 
 /* ==================== LOGGER ==================== */
 const logger = winston.createLogger({
-  level: 'info',
+  level: 'debug', // Changé à 'debug' pour plus de détails
   format: winston.format.combine(
     winston.format.timestamp(),
-    winston.format.json()
+    winston.format.colorize(),
+    winston.format.printf(({ timestamp, level, message, ...meta }) => {
+      return `${timestamp} [${level}]: ${message} ${Object.keys(meta).length ? JSON.stringify(meta, null, 2) : ''}`;
+    })
   ),
   transports: [
-    new winston.transports.File({ filename: 'error.log', level: 'error' }),
-    new winston.transports.File({ filename: 'combined.log' }),
-    new winston.transports.Console({ format: winston.format.simple() })
+    new winston.transports.Console()
   ]
 });
 
@@ -39,17 +40,23 @@ app.use(cors({ origin: '*', credentials: true }));
 app.use(express.json({ limit: '10mb' }));
 app.use('/api/', rateLimit({ windowMs: 15 * 60 * 1000, max: 100 }));
 
+// Logger middleware
+app.use((req, res, next) => {
+  logger.info(`${req.method} ${req.path}`, { body: req.body });
+  next();
+});
+
 /* ==================== REDIS ==================== */
 let redisClient = null;
 
 (async () => {
   try {
     redisClient = createClient({ url: config.redisUrl });
-    redisClient.on('error', err => logger.warn('Redis error', err));
+    redisClient.on('error', err => logger.warn('Redis error', { error: err.message }));
     await redisClient.connect();
     logger.info('✅ Redis connecté');
-  } catch {
-    logger.warn('⚠️ Redis indisponible, cache désactivé');
+  } catch (err) {
+    logger.warn('⚠️ Redis indisponible, cache désactivé', { error: err.message });
     redisClient = null;
   }
 })();
@@ -79,24 +86,34 @@ class TomTomGeocodingService {
   static async geocode(address) {
     const cacheKey = `geocode:tomtom:${address}`;
     const cached = await CacheService.get(cacheKey);
-    if (cached) return cached;
+    if (cached) {
+      logger.debug('📦 Cache hit pour géocodage', { address, cached });
+      return cached;
+    }
 
     try {
-      logger.info(`Geocoding address: ${address}`);
-      const res = await axios.get(
-        `https://api.tomtom.com/search/2/geocode/${encodeURIComponent(address)}.json`,
-        {
-          params: {
-            key: config.tomtomApiKey,
-            limit: 1,
-            countrySet: 'MA' // Filtre pour le Maroc
-          },
-          timeout: 10000
-        }
-      );
+      logger.info('🔍 Géocodage de l\'adresse', { address });
+      
+      const url = `https://api.tomtom.com/search/2/geocode/${encodeURIComponent(address)}.json`;
+      logger.debug('📡 Requête TomTom', { url, key: config.tomtomApiKey.substring(0, 10) + '...' });
+      
+      const res = await axios.get(url, {
+        params: {
+          key: config.tomtomApiKey,
+          limit: 1,
+          countrySet: 'MA'
+        },
+        timeout: 10000
+      });
+
+      logger.debug('📥 Réponse TomTom géocodage', { 
+        status: res.status,
+        resultsCount: res.data?.results?.length || 0,
+        firstResult: res.data?.results?.[0]?.address?.freeformAddress
+      });
 
       if (!res.data?.results?.[0]) {
-        logger.warn(`No geocoding results for: ${address}`);
+        logger.warn('❌ Aucun résultat de géocodage', { address });
         return null;
       }
 
@@ -109,14 +126,21 @@ class TomTomGeocodingService {
         city: result.address.municipality
       };
 
-      logger.info(`Geocoded successfully: ${geo.display_name} (${geo.lat}, ${geo.lon})`);
+      logger.info('✅ Géocodage réussi', { 
+        address, 
+        result: `${geo.display_name} (${geo.lat}, ${geo.lon})` 
+      });
+      
       await CacheService.set(cacheKey, geo, 3600);
       return geo;
     } catch (err) {
-      logger.error('TomTom Geocoding error:', err.message);
-      if (err.response) {
-        logger.error('Response data:', err.response.data);
-      }
+      logger.error('❌ Erreur de géocodage TomTom', { 
+        address,
+        error: err.message,
+        status: err.response?.status,
+        statusText: err.response?.statusText,
+        data: err.response?.data
+      });
       return null;
     }
   }
@@ -127,9 +151,14 @@ class TomTomRoutingService {
   static async getRoute(oLat, oLon, dLat, dLon, travelMode = 'car') {
     const cacheKey = `tomtom:route:${oLat}:${oLon}:${dLat}:${dLon}:${travelMode}`;
     const cached = await CacheService.get(cacheKey);
-    if (cached) return cached;
+    if (cached) {
+      logger.debug('📦 Cache hit pour routing', { cacheKey });
+      return cached;
+    }
 
     try {
+      logger.info('🚗 Calcul d\'itinéraire', { oLat, oLon, dLat, dLon, travelMode });
+      
       const res = await axios.get(
         `https://api.tomtom.com/routing/1/calculateRoute/${oLat},${oLon}:${dLat},${dLon}/json`,
         {
@@ -144,6 +173,11 @@ class TomTomRoutingService {
         }
       );
 
+      logger.debug('📥 Réponse TomTom routing', { 
+        status: res.status,
+        routesCount: res.data?.routes?.length || 0
+      });
+
       const route = res.data?.routes?.[0];
       if (!route) throw new Error('No route found');
 
@@ -156,10 +190,19 @@ class TomTomRoutingService {
         source: 'tomtom'
       };
 
+      logger.info('✅ Itinéraire calculé', { 
+        distance: `${Math.round(data.distance / 1000)}km`,
+        duration: `${Math.round(data.duration / 60)}min`
+      });
+
       await CacheService.set(cacheKey, data, 1800);
       return data;
     } catch (err) {
-      logger.error(`TomTom Routing error: ${err.message}`);
+      logger.error('❌ Erreur de routing TomTom', { 
+        error: err.message,
+        status: err.response?.status,
+        data: err.response?.data
+      });
       throw new Error('Routing service unavailable');
     }
   }
@@ -174,10 +217,14 @@ class TomTomTransitService {
   static async getTransitStopsNearby(lat, lon, radius = 1000) {
     const cacheKey = `tomtom:transit:${lat}:${lon}:${radius}`;
     const cached = await CacheService.get(cacheKey);
-    if (cached) return cached;
+    if (cached) {
+      logger.debug('📦 Cache hit pour transit stops', { lat, lon, radius });
+      return cached;
+    }
 
     try {
-      // TomTom Search API pour les arrêts de transport
+      logger.info('🚏 Recherche d\'arrêts de transport', { lat, lon, radius });
+      
       const res = await axios.get(
         `https://api.tomtom.com/search/2/nearbySearch/.json`,
         {
@@ -186,7 +233,7 @@ class TomTomTransitService {
             lat: lat,
             lon: lon,
             radius: radius,
-            categorySet: '9361,9362,9363,9364', // Transit stops categories
+            categorySet: '9361,9362,9363,9364',
             limit: 100
           },
           timeout: 15000
@@ -194,7 +241,7 @@ class TomTomTransitService {
       );
 
       const results = res.data?.results || [];
-      logger.info(`TomTom returned ${results.length} transit stops for lat=${lat}, lon=${lon}`);
+      logger.info(`✅ ${results.length} arrêts trouvés`, { lat, lon, radius });
 
       const stops = results.map((stop, idx) => ({
         id: stop.id || `tomtom_${idx}`,
@@ -217,7 +264,11 @@ class TomTomTransitService {
       await CacheService.set(cacheKey, result, 3600);
       return result;
     } catch (err) {
-      logger.error(`TomTom Transit error: ${err.message}`);
+      logger.error('❌ Erreur recherche transit stops', { 
+        error: err.message,
+        status: err.response?.status,
+        data: err.response?.data
+      });
       return {
         stops: [],
         count: 0,
@@ -229,7 +280,6 @@ class TomTomTransitService {
   }
 
   static extractRoutesFromStop(stop) {
-    // Extraction basique des lignes de transport depuis les données TomTom
     const routes = [];
     if (stop.poi?.name) {
       const matches = stop.poi.name.match(/\b[A-Z]?\d+[A-Z]?\b/g);
@@ -237,7 +287,6 @@ class TomTomTransitService {
         routes.push(...matches);
       }
     }
-    // Par défaut, retourner des lignes génériques si aucune trouvée
     return routes.length > 0 ? routes : ['L1', 'L2'];
   }
 
@@ -260,10 +309,11 @@ class TomTomTransitService {
           });
         }
       } catch (err) {
-        logger.warn(`Could not calculate walk to stop ${stop.id}: ${err.message}`);
+        logger.warn(`⚠️ Impossible de calculer la marche vers l'arrêt ${stop.id}`, { error: err.message });
       }
     }
 
+    logger.info(`✅ ${accessibleStops.length} arrêts accessibles trouvés`);
     return accessibleStops.sort((a, b) => a.walkingDistance - b.walkingDistance);
   }
 }
@@ -276,6 +326,8 @@ class TomTomTrafficService {
     if (cached) return cached;
 
     try {
+      logger.info('🚦 Récupération info trafic', { lat, lon });
+      
       const res = await axios.get(
         `https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/10/json`,
         {
@@ -296,10 +348,11 @@ class TomTomTrafficService {
         source: 'tomtom-traffic'
       };
 
+      logger.info('✅ Info trafic récupérée', trafficInfo);
       await CacheService.set(cacheKey, trafficInfo, 300);
       return trafficInfo;
     } catch (err) {
-      logger.error(`TomTom Traffic error: ${err.message}`);
+      logger.warn('⚠️ Erreur info trafic', { error: err.message });
       return null;
     }
   }
@@ -310,13 +363,15 @@ class RouteOptimizer {
   static async optimizeRoute(origin, destination) {
     const warnings = [];
 
-    logger.info(`Finding transit stops near origin (${origin.lat}, ${origin.lon})`);
+    logger.info('🎯 Optimisation d\'itinéraire', { origin, destination });
+
     const originTransit = await TomTomTransitService.getTransitStopsNearby(
       origin.lat, origin.lon, 2000
     );
     let originStops = originTransit.stops;
 
     if (originStops.length === 0) {
+      logger.warn('⚠️ Aucun arrêt trouvé dans un rayon de 2km, élargissement à 5km');
       const originTransitLarge = await TomTomTransitService.getTransitStopsNearby(
         origin.lat, origin.lon, 5000
       );
@@ -327,13 +382,13 @@ class RouteOptimizer {
       }
     }
 
-    logger.info(`Finding transit stops near destination (${destination.lat}, ${destination.lon})`);
     const destTransit = await TomTomTransitService.getTransitStopsNearby(
       destination.lat, destination.lon, 2000
     );
     let destStops = destTransit.stops;
 
     if (destStops.length === 0) {
+      logger.warn('⚠️ Aucun arrêt trouvé dans un rayon de 2km, élargissement à 5km');
       const destTransitLarge = await TomTomTransitService.getTransitStopsNearby(
         destination.lat, destination.lon, 5000
       );
@@ -344,7 +399,7 @@ class RouteOptimizer {
       }
     }
 
-    logger.info('Calculating walking distances to accessible stops...');
+    logger.info('📊 Calcul des distances de marche...');
     const accessibleOriginStops = await TomTomTransitService.findAccessibleStops(
       origin.lat, origin.lon, originStops.slice(0, 10)
     );
@@ -367,11 +422,11 @@ class RouteOptimizer {
       });
     }
 
-    logger.info('Getting traffic information...');
+    logger.info('🚦 Récupération des infos trafic...');
     const originTraffic = await TomTomTrafficService.getTrafficInfo(origin.lat, origin.lon);
     const destTraffic = await TomTomTrafficService.getTrafficInfo(destination.lat, destination.lon);
 
-    logger.info('Finding optimal transit routes...');
+    logger.info('🔀 Calcul des itinéraires optimaux...');
     const routes = [];
 
     const stopsToCheck = Math.min(accessibleOriginStops.length, 5);
@@ -411,7 +466,7 @@ class RouteOptimizer {
             source: 'tomtom-real-data'
           });
         } catch (err) {
-          logger.warn(`Route calculation failed: ${err.message}`);
+          logger.warn('⚠️ Échec calcul d\'itinéraire', { error: err.message });
         }
       }
     }
@@ -422,6 +477,8 @@ class RouteOptimizer {
       ...route,
       score: this.calculateScore(route, originTraffic, destTraffic)
     }));
+
+    logger.info(`✅ ${scoredRoutes.length} itinéraires calculés avec succès`);
 
     return {
       routes: scoredRoutes.slice(0, 5),
@@ -465,18 +522,24 @@ class RouteOptimizer {
 
 /* ==================== ROUTES ==================== */
 app.get('/health', (req, res) => {
-  res.json({
+  const health = {
     status: 'ok',
     redis: redisClient?.isOpen || false,
     tomtom: config.tomtomApiKey !== 'YOUR_TOMTOM_API_KEY_HERE',
     timestamp: new Date().toISOString()
-  });
+  };
+  logger.info('💚 Health check', health);
+  res.json(health);
 });
 
 app.post('/api/routes/optimize', async (req, res) => {
   try {
     const { origin, destination } = req.body;
+    
+    logger.info('📨 Requête d\'optimisation reçue', { origin, destination });
+    
     if (!origin || !destination) {
+      logger.warn('❌ Origine ou destination manquante');
       return res.status(400).json({ error: 'origin et destination requis' });
     }
 
@@ -488,27 +551,50 @@ app.post('/api/routes/optimize', async (req, res) => {
       : destination;
 
     if (!o || !d) {
+      logger.error('❌ Géocodage échoué', { 
+        originGeocoded: !!o, 
+        destinationGeocoded: !!d 
+      });
       return res.status(404).json({ error: 'Adresse introuvable' });
     }
 
+    logger.info('✅ Géocodage réussi', { origin: o, destination: d });
+
     const result = await RouteOptimizer.optimizeRoute(o, d);
+    
+    logger.info('🎉 Optimisation terminée avec succès', { 
+      routesCount: result.routes.length 
+    });
+    
     res.json(result);
   } catch (err) {
-    logger.error('Optimization error:', err.message);
+    logger.error('💥 Erreur d\'optimisation', { 
+      error: err.message,
+      stack: err.stack
+    });
     res.status(500).json({ error: err.message });
   }
 });
 
-app.use((req, res) => res.status(404).json({ error: 'Route non trouvée' }));
+app.use((req, res) => {
+  logger.warn('❌ Route non trouvée', { path: req.path });
+  res.status(404).json({ error: 'Route non trouvée' });
+});
 
 /* ==================== SERVER ==================== */
 app.listen(config.port, () => {
+  console.log('\n'.repeat(2));
+  logger.info('='.repeat(60));
   logger.info(`🚀 Backend démarré sur le port ${config.port}`);
   logger.info('📊 Mode: DONNÉES RÉELLES TOMTOM');
   logger.info(`🔑 TomTom API: ${config.tomtomApiKey !== 'YOUR_TOMTOM_API_KEY_HERE' ? 'Configurée ✅' : 'NON CONFIGURÉE ❌'}`);
+  logger.info(`🔑 Clé API: ${config.tomtomApiKey.substring(0, 15)}...`);
+  logger.info('='.repeat(60));
+  console.log('\n');
 });
 
 process.on('SIGTERM', async () => {
+  logger.info('⚠️ Signal SIGTERM reçu, fermeture...');
   if (redisClient?.isOpen) await redisClient.quit();
   process.exit(0);
 });
