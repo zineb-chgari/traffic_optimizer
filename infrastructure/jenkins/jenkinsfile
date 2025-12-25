@@ -18,7 +18,9 @@ pipeline {
                 script {
                     // Récupérer la clé TomTom avec gestion d'erreur
                     try {
-                        env.TOMTOM_API_KEY = credentials('tomtom-api-key')
+                        withCredentials([string(credentialsId: 'tomtom-api-key', variable: 'TOMTOM_KEY')]) {
+                            env.TOMTOM_API_KEY = TOMTOM_KEY
+                        }
                         echo "✓ TomTom API Key loaded from credentials"
                     } catch (Exception e) {
                         env.TOMTOM_API_KEY = 'YOUR_TOMTOM_API_KEY_HERE'
@@ -37,28 +39,30 @@ pipeline {
         
         stage('Environment Check') {
             steps {
-                bat '''
-                    echo ==========================================
-                    echo === ENVIRONMENT CHECK ===
-                    echo ==========================================
-                    echo PATH: %PATH%
-                    echo.
-                    echo Checking tools...
-                    docker --version
-                    kubectl version --client
-                    terraform version
-                    kind version
-                    echo.
-                    echo Checking TomTom API Key...
-                    if "%TOMTOM_API_KEY%"=="YOUR_TOMTOM_API_KEY_HERE" (
-                        echo WARNING: TomTom API Key not configured properly!
-                        echo Please create credential 'tomtom-api-key' in Jenkins
-                    ) else (
-                        echo TomTom API Key configured ✓
-                    )
-                    echo.
-                    echo All tools found successfully!
-                '''
+                script {
+                    bat """
+                        echo ==========================================
+                        echo === ENVIRONMENT CHECK ===
+                        echo ==========================================
+                        echo PATH: %PATH%
+                        echo.
+                        echo Checking tools...
+                        docker --version
+                        kubectl version --client
+                        terraform version
+                        kind version
+                        echo.
+                        echo Checking TomTom API Key...
+                        if "${env.TOMTOM_API_KEY}"=="YOUR_TOMTOM_API_KEY_HERE" (
+                            echo WARNING: TomTom API Key not configured properly!
+                            echo Please create credential 'tomtom-api-key' in Jenkins
+                        ) else (
+                            echo TomTom API Key configured ✓
+                        )
+                        echo.
+                        echo All tools found successfully!
+                    """
+                }
             }
         }
         
@@ -116,7 +120,7 @@ pipeline {
                                 echo === BUILDING BACKEND IMAGE ===
                                 echo ==========================================
                                 docker build -f backend\\Dockerfile ^
-                                    --build-arg TOMTOM_API_KEY=%TOMTOM_API_KEY% ^
+                                    --build-arg TOMTOM_API_KEY=${env.TOMTOM_API_KEY} ^
                                     -t transport-backend:latest ^
                                     -t transport-backend:${BUILD_TAG} ^
                                     backend
@@ -141,7 +145,7 @@ pipeline {
                                 echo ==========================================
                                 docker build -f frontend\\Dockerfile ^
                                     --build-arg NODE_OPTIONS=--max-old-space-size=4096 ^
-                                    --build-arg TOMTOM_API_KEY=%TOMTOM_API_KEY% ^
+                                    --build-arg TOMTOM_API_KEY=${env.TOMTOM_API_KEY} ^
                                     -t transport-frontend:latest ^
                                     -t transport-frontend:${BUILD_TAG} ^
                                     frontend
@@ -208,20 +212,22 @@ pipeline {
         
         stage('Create TomTom Secret') {
             steps {
-                bat """
-                    echo ==========================================
-                    echo === CREATING TOMTOM API SECRET ===
-                    echo ==========================================
-                    
-                    echo Creating Kubernetes secret for TomTom API Key...
-                    kubectl create secret generic tomtom-api-secret ^
-                        --from-literal=TOMTOM_API_KEY=%TOMTOM_API_KEY% ^
-                        --dry-run=client -o yaml | kubectl apply -f -
-                    
-                    echo.
-                    echo Secret created successfully!
-                    kubectl get secret tomtom-api-secret
-                """
+                script {
+                    bat """
+                        echo ==========================================
+                        echo === CREATING TOMTOM API SECRET ===
+                        echo ==========================================
+                        
+                        echo Creating Kubernetes secret for TomTom API Key...
+                        kubectl create secret generic tomtom-api-secret ^
+                            --from-literal=TOMTOM_API_KEY=${env.TOMTOM_API_KEY} ^
+                            --dry-run=client -o yaml | kubectl apply -f -
+                        
+                        echo.
+                        echo Secret created successfully!
+                        kubectl get secret tomtom-api-secret
+                    """
+                }
             }
         }
         
@@ -351,20 +357,22 @@ pipeline {
         stage('Deploy with Terraform') {
             steps {
                 dir('infrastructure/Terraform') {
-                    bat """
-                        echo ==========================================
-                        echo === DEPLOYING WITH TERRAFORM ===
-                        echo ==========================================
-                        
-                        echo Setting Terraform variables...
-                        set TF_VAR_tomtom_api_key=%TOMTOM_API_KEY%
-                        
-                        echo Applying Terraform configuration...
-                        terraform apply -auto-approve
-                        
-                        echo.
-                        echo Terraform deployment initiated!
-                    """
+                    script {
+                        bat """
+                            echo ==========================================
+                            echo === DEPLOYING WITH TERRAFORM ===
+                            echo ==========================================
+                            
+                            echo Setting Terraform variables...
+                            set TF_VAR_tomtom_api_key=${env.TOMTOM_API_KEY}
+                            
+                            echo Applying Terraform configuration...
+                            terraform apply -auto-approve
+                            
+                            echo.
+                            echo Terraform deployment initiated!
+                        """
+                    }
                 }
             }
         }
@@ -553,7 +561,7 @@ pipeline {
                         echo === HOW TO ACCESS YOUR APPLICATION ===
                         echo ==========================================
                         echo.
-                        echo Your application has been successfully deployed with TomTom integration!
+                        echo Your application has been successfully deployed!
                         echo.
                         echo To access the services, open a NEW terminal and run:
                         echo.
@@ -565,41 +573,10 @@ pipeline {
                         echo   kubectl port-forward service/backend-service 3000:3000
                         echo   Then open: http://localhost:3000
                         echo.
-                        echo   FOR REDIS (if needed):
-                        echo   kubectl port-forward service/redis-service 6379:6379
-                        echo.
-                        echo ==========================================
-                        echo === DEPLOYED SERVICES ===
                         echo ==========================================
                         kubectl get svc
                         echo.
-                        echo ==========================================
-                        echo === RUNNING PODS ===
-                        echo ==========================================
                         kubectl get pods -o wide
-                        echo.
-                        echo ==========================================
-                        echo === USEFUL COMMANDS ===
-                        echo ==========================================
-                        echo.
-                        echo View logs:
-                        echo   kubectl logs -f deployment/backend
-                        echo   kubectl logs -f deployment/frontend
-                        echo   kubectl logs -f deployment/redis
-                        echo.
-                        echo Check TomTom API configuration:
-                        echo   kubectl exec -it deployment/backend -- printenv TOMTOM_API_KEY
-                        echo.
-                        echo Scale deployments:
-                        echo   kubectl scale deployment/backend --replicas=5
-                        echo   kubectl scale deployment/frontend --replicas=3
-                        echo.
-                        echo Check pod details:
-                        echo   kubectl describe pod [POD_NAME]
-                        echo.
-                        echo Delete cluster when done:
-                        echo   kind delete cluster --name k8s-terraform
-                        echo.
                     '''
                 }
             }
@@ -613,70 +590,14 @@ pipeline {
                     echo '✗✗✗ PIPELINE FAILED ✗✗✗'
                     echo '=========================================='
                     bat '''
-                        echo.
-                        echo ==========================================
                         echo === FAILURE DIAGNOSTICS ===
-                        echo ==========================================
-                        
-                        echo.
-                        echo === Kubernetes Contexts ===
                         kubectl config get-contexts || echo Cannot get contexts
-                        
-                        echo.
-                        echo === Cluster Info ===
-                        kubectl cluster-info || echo Cannot get cluster info
-                        
-                        echo.
-                        echo === All Pods Status ===
                         kubectl get pods --all-namespaces -o wide || echo Cannot get pods
-                        
+                        docker exec k8s-terraform-control-plane crictl images 2>nul || echo Cannot access cluster
+                        docker images | findstr "transport redis" || echo No images found
                         echo.
-                        echo === Secrets ===
-                        kubectl get secrets || echo Cannot get secrets
-                        
-                        echo.
-                        echo === Recent Events (All) ===
-                        kubectl get events --all-namespaces --sort-by=.metadata.creationTimestamp || echo Cannot get events
-                        
-                        echo.
-                        echo === Failed Pods Details ===
-                        for /f "tokens=1" %%i in ('kubectl get pods -o name 2^>nul') do (
-                            echo.
-                            echo Describing %%i
-                            kubectl describe %%i 2>nul
-                            echo.
-                            echo Logs for %%i
-                            kubectl logs %%i --all-containers=true --tail=50 2>nul || echo No logs available
-                        )
-                        
-                        echo.
-                        echo === Docker Images in Kind ===
-                        docker exec k8s-terraform-control-plane crictl images 2>nul || echo Cannot access Kind cluster
-                        
-                        echo.
-                        echo === Local Docker Images ===
-                        docker images | findstr "transport redis"
-                        
-                        echo.
-                        echo === Node Status ===
-                        kubectl describe node k8s-terraform-control-plane 2>nul || echo Cannot describe node
-                        
-                        echo.
-                        echo ==========================================
-                        echo === TROUBLESHOOTING TIPS ===
-                        echo ==========================================
-                        echo.
-                        echo 1. Check if Docker is running: docker ps
-                        echo 2. Check Kind cluster: kind get clusters
-                        echo 3. Check kubectl context: kubectl config current-context
-                        echo 4. View detailed logs: kubectl logs -l app=backend --previous
-                        echo 5. Check image pull status: kubectl describe pod [POD_NAME]
-                        echo 6. Verify images in Kind: docker exec k8s-terraform-control-plane crictl images
-                        echo 7. Check TomTom secret: kubectl get secret tomtom-api-secret -o yaml
-                        echo 8. Verify API key in pods: kubectl exec -it deployment/backend -- printenv TOMTOM_API_KEY
-                        echo.
-                        echo ==========================================
-                    '''
+                        echo Check the logs above for details
+                    ''' || echo "Diagnostics failed - check earlier stages"
                 }
             }
         }
