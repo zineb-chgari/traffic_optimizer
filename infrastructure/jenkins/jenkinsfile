@@ -109,12 +109,13 @@ pipeline {
             steps {
                 script {
                     retry(2) {
-                        timeout(time: 10, unit: 'MINUTES') {
+                        timeout(time: 20, unit: 'MINUTES') {
                             bat """
                                 echo ==========================================
                                 echo === BUILDING FRONTEND IMAGE ===
                                 echo ==========================================
                                 docker build -f frontend\\Dockerfile ^
+                                    --build-arg NODE_OPTIONS=--max-old-space-size=4096 ^
                                     -t transport-frontend:latest ^
                                     -t transport-frontend:${BUILD_TAG} ^
                                     frontend
