@@ -26,7 +26,11 @@ const config = {
   redisUrl: process.env.REDIS_URL || 'redis://redis:6379',
   cacheTTL: 300,
   openRouteServiceKey: process.env.ORS_API_KEY || '5b3ce3597851110001cf6248YOUR_KEY_HERE',
-  tomtomApiKey: process.env.TOMTOM_API_KEY || 'YOUR_TOMTOM_API_KEY'
+  tomtomApiKey: process.env.TOMTOM_API_KEY || 'YOUR_TOMTOM_API_KEY',
+  transitlandApiKey: process.env.TRANSITLAND_API_KEY || 'YOUR_TRANSITLAND_KEY',
+  maxWalkingDistance: 800, // Maximum acceptable walking distance in meters
+  transferPenalty: 300, // Seconds penalty per transfer
+  walkingSpeed: 1.4 // m/s (avg walking speed)
 };
 
 /* ==================== APP ==================== */
@@ -84,7 +88,7 @@ class GeocodingService {
         'https://nominatim.openstreetmap.org/search',
         {
           params: { q: address, format: 'json', limit: 1 },
-          headers: { 'User-Agent': 'TransportOptimizer/1.0' },
+          headers: { 'User-Agent': 'TransportOptimizer/2.0' },
           timeout: 10000
         }
       );
@@ -106,7 +110,7 @@ class GeocodingService {
   }
 }
 
-/* ==================== OPENROUTESERVICE ==================== */
+/* ==================== OPENROUTESERVICE - ROUTING RÉEL ==================== */
 class OpenRouteService {
   static async getRoute(oLat, oLon, dLat, dLon, profile = 'driving-car') {
     const cacheKey = `ors:${oLat}:${oLon}:${dLat}:${dLon}:${profile}`;
@@ -131,176 +135,360 @@ class OpenRouteService {
       );
 
       const route = res.data?.features?.[0];
-      if (!route) {
-        logger.warn('ORS: Aucune route trouvée, utilisation du fallback');
-        return RouteService.generateFallbackRoute(oLat, oLon, dLat, dLon);
-      }
+      if (!route) throw new Error('No route found');
 
       const data = {
         coordinates: route.geometry.coordinates.map(c => [c[1], c[0]]),
         distance: route.properties.segments[0].distance,
         duration: route.properties.segments[0].duration,
         steps: route.properties.segments[0].steps || [],
-        fallback: false
+        source: 'openrouteservice'
       };
 
       await CacheService.set(cacheKey, data, 3600);
       return data;
     } catch (err) {
-      logger.warn(`OpenRouteService indisponible (${err.message}), utilisation du fallback`);
-      return RouteService.generateFallbackRoute(oLat, oLon, dLat, dLon);
+      logger.error(`OpenRouteService error: ${err.message}`);
+      throw new Error('Routing service unavailable - cannot calculate route');
     }
+  }
+
+  // Calculate real walking distance between two points
+  static async getWalkingRoute(oLat, oLon, dLat, dLon) {
+    return await this.getRoute(oLat, oLon, dLat, dLon, 'foot-walking');
   }
 }
 
-/* ==================== TOMTOM TRAFFIC SERVICE ==================== */
-class TomTomTrafficService {
-  static async getRealTimeTraffic(lat, lon, zoom = 10) {
-    const cacheKey = `traffic:${lat}:${lon}:${zoom}`;
+/* ==================== URBAN DENSITY - DONNÉES RÉELLES VIA OVERPASS API ==================== */
+class UrbanDensityService {
+  static async calculateRealDensity(lat, lon, radius = 500) {
+    const cacheKey = `density:${lat}:${lon}:${radius}`;
     const cached = await CacheService.get(cacheKey);
     if (cached) return cached;
 
     try {
-      const res = await axios.get(
-        `https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/${zoom}/json`,
+      // Query Overpass API for buildings and amenities
+      const query = `
+        [out:json][timeout:10];
+        (
+          way(around:${radius},${lat},${lon})["building"];
+          node(around:${radius},${lat},${lon})["amenity"];
+          node(around:${radius},${lat},${lon})["shop"];
+        );
+        out count;
+      `;
+
+      const res = await axios.post(
+        'https://overpass-api.de/api/interpreter',
+        query,
         {
-          params: {
-            key: config.tomtomApiKey,
-            point: `${lat},${lon}`
-          },
-          timeout: 5000
+          headers: { 'Content-Type': 'text/plain' },
+          timeout: 15000
         }
       );
 
-      const flowData = res.data?.flowSegmentData;
-      if (!flowData) {
-        return this.getFallbackTraffic();
-      }
+      const elements = res.data?.elements || [];
+      const buildings = elements.filter(e => e.tags?.building).length;
+      const amenities = elements.filter(e => e.tags?.amenity).length;
+      const shops = elements.filter(e => e.tags?.shop).length;
 
-      const trafficData = {
-        currentSpeed: flowData.currentSpeed || 30,
-        freeFlowSpeed: flowData.freeFlowSpeed || 50,
-        currentTravelTime: flowData.currentTravelTime || 0,
-        freeFlowTravelTime: flowData.freeFlowTravelTime || 0,
-        confidence: flowData.confidence || 0.5,
-        roadClosure: flowData.roadClosure || false,
-        coordinates: flowData.coordinates?.coordinate || [],
-        congestionLevel: Math.round((1 - (flowData.currentSpeed / flowData.freeFlowSpeed)) * 100)
+      // Calculate density score based on real data
+      const totalFeatures = buildings + amenities + shops;
+      const densityScore = Math.min(100, Math.round((totalFeatures / 100) * 100));
+
+      const density = {
+        buildings,
+        amenities,
+        shops,
+        totalFeatures,
+        densityScore,
+        radius,
+        source: 'overpass-api',
+        interpretation: densityScore > 70 ? 'high' : densityScore > 40 ? 'medium' : 'low'
       };
 
-      await CacheService.set(cacheKey, trafficData, 180);
-      return trafficData;
+      await CacheService.set(cacheKey, density, 7200);
+      return density;
     } catch (err) {
-      logger.warn(`TomTom Traffic API error: ${err.message}`);
-      return this.getFallbackTraffic();
+      logger.error(`Urban density calculation error: ${err.message}`);
+      throw new Error('Urban density data unavailable');
+    }
+  }
+}
+
+/* ==================== GTFS/TRANSPORT PUBLIC - DONNÉES RÉELLES ==================== */
+class PublicTransportService {
+  // Get real transit lines near a location using Overpass API
+  static async getTransitLinesNearby(lat, lon, radius = 1000) {
+    const cacheKey = `transit:${lat}:${lon}:${radius}`;
+    const cached = await CacheService.get(cacheKey);
+    if (cached) return cached;
+
+    try {
+      // Query for public transport routes and stops
+      const query = `
+        [out:json][timeout:15];
+        (
+          node(around:${radius},${lat},${lon})["public_transport"="stop_position"];
+          node(around:${radius},${lat},${lon})["highway"="bus_stop"];
+          node(around:${radius},${lat},${lon})["railway"="tram_stop"];
+        );
+        out body;
+        >;
+        out skel qt;
+      `;
+
+      const res = await axios.post(
+        'https://overpass-api.de/api/interpreter',
+        query,
+        {
+          headers: { 'Content-Type': 'text/plain' },
+          timeout: 20000
+        }
+      );
+
+      const stops = (res.data?.elements || []).map(stop => ({
+        id: stop.id,
+        lat: stop.lat,
+        lon: stop.lon,
+        name: stop.tags?.name || 'Unknown Stop',
+        type: stop.tags?.public_transport || stop.tags?.highway || stop.tags?.railway,
+        routes: stop.tags?.route_ref ? stop.tags.route_ref.split(';') : [],
+        operator: stop.tags?.operator || 'Unknown'
+      }));
+
+      const result = {
+        stops,
+        count: stops.length,
+        source: 'overpass-api',
+        searchRadius: radius
+      };
+
+      await CacheService.set(cacheKey, result, 3600);
+      return result;
+    } catch (err) {
+      logger.error(`Transit data error: ${err.message}`);
+      throw new Error('Transit data unavailable');
     }
   }
 
-  static getFallbackTraffic() {
-    const hour = new Date().getHours();
-    let congestionLevel = 20;
+  // Calculate real walking distance to nearest stops
+  static async findAccessibleStops(originLat, originLon, stops) {
+    const accessibleStops = [];
 
-    if ((hour >= 7 && hour <= 9) || (hour >= 17 && hour <= 19)) {
-      congestionLevel = 70;
-    } else if (hour >= 12 && hour <= 14) {
-      congestionLevel = 45;
+    for (const stop of stops) {
+      try {
+        const walkingRoute = await OpenRouteService.getWalkingRoute(
+          originLat, originLon, stop.lat, stop.lon
+        );
+
+        if (walkingRoute.distance <= config.maxWalkingDistance) {
+          accessibleStops.push({
+            ...stop,
+            walkingDistance: walkingRoute.distance,
+            walkingDuration: walkingRoute.duration,
+            walkingRoute: walkingRoute.coordinates,
+            accessible: true
+          });
+        }
+      } catch (err) {
+        logger.warn(`Could not calculate walk to stop ${stop.id}: ${err.message}`);
+      }
     }
 
-    return {
-      currentSpeed: 30,
-      freeFlowSpeed: 50,
-      congestionLevel,
-      fallback: true
-    };
+    return accessibleStops.sort((a, b) => a.walkingDistance - b.walkingDistance);
   }
+}
 
-  static async getRouteTraffic(coordinates) {
-    const trafficData = [];
+/* ==================== ROUTE OPTIMIZATION - ALGORITHME AVEC DONNÉES RÉELLES ==================== */
+class RouteOptimizer {
+  static async optimizeRoute(origin, destination) {
+    const anomalies = [];
+    const warnings = [];
+
+    // Step 1: Get transit stops near origin
+    logger.info(`Finding transit stops near origin (${origin.lat}, ${origin.lon})`);
+    let originStops;
+    try {
+      const originTransit = await PublicTransportService.getTransitLinesNearby(
+        origin.lat, origin.lon, 1000
+      );
+      originStops = originTransit.stops;
+      
+      if (originStops.length === 0) {
+        anomalies.push({
+          type: 'NO_TRANSIT_ORIGIN',
+          severity: 'critical',
+          message: `No public transit stops found within 1km of origin`
+        });
+      }
+    } catch (err) {
+      anomalies.push({
+        type: 'TRANSIT_DATA_ERROR',
+        severity: 'critical',
+        message: `Could not fetch transit data: ${err.message}`
+      });
+      throw new Error('Cannot proceed without transit data');
+    }
+
+    // Step 2: Get transit stops near destination
+    logger.info(`Finding transit stops near destination (${destination.lat}, ${destination.lon})`);
+    let destStops;
+    try {
+      const destTransit = await PublicTransportService.getTransitLinesNearby(
+        destination.lat, destination.lon, 1000
+      );
+      destStops = destTransit.stops;
+      
+      if (destStops.length === 0) {
+        anomalies.push({
+          type: 'NO_TRANSIT_DEST',
+          severity: 'critical',
+          message: `No public transit stops found within 1km of destination`
+        });
+      }
+    } catch (err) {
+      anomalies.push({
+        type: 'TRANSIT_DATA_ERROR',
+        severity: 'critical',
+        message: `Could not fetch transit data: ${err.message}`
+      });
+      throw new Error('Cannot proceed without transit data');
+    }
+
+    // Step 3: Calculate real walking distances to accessible stops
+    logger.info('Calculating walking distances to accessible stops...');
+    const accessibleOriginStops = await PublicTransportService.findAccessibleStops(
+      origin.lat, origin.lon, originStops
+    );
     
-    for (let i = 0; i < coordinates.length; i += 5) {
-      const coord = coordinates[i];
-      const traffic = await this.getRealTimeTraffic(coord[0], coord[1]);
-      trafficData.push({
-        position: i,
-        ...traffic
+    const accessibleDestStops = await PublicTransportService.findAccessibleStops(
+      destination.lat, destination.lon, destStops
+    );
+
+    if (accessibleOriginStops.length === 0) {
+      anomalies.push({
+        type: 'NO_ACCESSIBLE_STOPS_ORIGIN',
+        severity: 'critical',
+        message: `All origin stops are beyond maximum walking distance (${config.maxWalkingDistance}m)`
       });
     }
 
-    const avgCongestion = trafficData.reduce((sum, t) => sum + t.congestionLevel, 0) / trafficData.length;
-
-    return {
-      segments: trafficData,
-      averageCongestion: Math.round(avgCongestion),
-      maxCongestion: Math.max(...trafficData.map(t => t.congestionLevel))
-    };
-  }
-}
-
-/* ==================== ROUTE CALCULATION ==================== */
-class RouteService {
-  static haversineDistance(lat1, lon1, lat2, lon2) {
-    const R = 6371000;
-    const dLat = (lat2 - lat1) * Math.PI / 180;
-    const dLon = (lon2 - lon1) * Math.PI / 180;
-    const a = 
-      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-      Math.sin(dLon / 2) * Math.sin(dLon / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c;
-  }
-
-  static generateIntermediatePoints(lat1, lon1, lat2, lon2, numPoints = 10) {
-    const points = [[lat1, lon1]];
-    
-    for (let i = 1; i < numPoints; i++) {
-      const ratio = i / numPoints;
-      const lat = lat1 + (lat2 - lat1) * ratio;
-      const lon = lon1 + (lon2 - lon1) * ratio;
-      
-      const variation = 0.001;
-      const latVar = lat + (Math.random() - 0.5) * variation;
-      const lonVar = lon + (Math.random() - 0.5) * variation;
-      
-      points.push([latVar, lonVar]);
+    if (accessibleDestStops.length === 0) {
+      anomalies.push({
+        type: 'NO_ACCESSIBLE_STOPS_DEST',
+        severity: 'critical',
+        message: `All destination stops are beyond maximum walking distance (${config.maxWalkingDistance}m)`
+      });
     }
-    
-    points.push([lat2, lon2]);
-    return points;
-  }
 
-  static generateFallbackRoute(oLat, oLon, dLat, dLon) {
-    const distance = this.haversineDistance(oLat, oLon, dLat, dLon);
-    const avgSpeed = 8.33;
-    const duration = distance / avgSpeed;
-    const coordinates = this.generateIntermediatePoints(oLat, oLon, dLat, dLon, 15);
+    // Step 4: Calculate urban density at both points
+    logger.info('Analyzing urban density...');
+    const originDensity = await UrbanDensityService.calculateRealDensity(origin.lat, origin.lon);
+    const destDensity = await UrbanDensityService.calculateRealDensity(destination.lat, destination.lon);
+
+    // Step 5: Find common routes between stops
+    logger.info('Finding common transit routes...');
+    const routes = [];
     
+    for (const originStop of accessibleOriginStops.slice(0, 5)) {
+      for (const destStop of accessibleDestStops.slice(0, 5)) {
+        const commonRoutes = originStop.routes.filter(r => 
+          destStop.routes.includes(r)
+        );
+
+        if (commonRoutes.length > 0) {
+          // Direct route found
+          for (const routeId of commonRoutes) {
+            try {
+              const transitRoute = await OpenRouteService.getRoute(
+                originStop.lat, originStop.lon,
+                destStop.lat, destStop.lon,
+                'driving-car' // Approximation for transit path
+              );
+
+              routes.push({
+                type: 'DIRECT',
+                routeId,
+                originStop,
+                destStop,
+                transitDistance: transitRoute.distance,
+                transitDuration: transitRoute.duration,
+                totalWalkingDistance: originStop.walkingDistance + destStop.walkingDistance,
+                totalWalkingDuration: originStop.walkingDuration + destStop.walkingDuration,
+                transfers: 0,
+                totalDuration: transitRoute.duration + originStop.walkingDuration + destStop.walkingDuration,
+                coordinates: [
+                  ...originStop.walkingRoute,
+                  ...transitRoute.coordinates,
+                  ...destStop.walkingRoute
+                ],
+                source: 'real-data'
+              });
+            } catch (err) {
+              warnings.push({
+                type: 'ROUTE_CALCULATION_FAILED',
+                message: `Could not calculate route between stops: ${err.message}`
+              });
+            }
+          }
+        }
+      }
+    }
+
+    // Sort routes by total duration
+    routes.sort((a, b) => a.totalDuration - b.totalDuration);
+
+    // Step 6: Calculate scores based on real data
+    const scoredRoutes = routes.map(route => ({
+      ...route,
+      score: this.calculateRealScore(route, originDensity, destDensity)
+    }));
+
     return {
-      coordinates,
-      distance,
-      duration,
-      fallback: true
+      routes: scoredRoutes.slice(0, 3),
+      origin: {
+        ...origin,
+        density: originDensity,
+        nearbyStops: accessibleOriginStops.length,
+        closestStop: accessibleOriginStops[0]
+      },
+      destination: {
+        ...destination,
+        density: destDensity,
+        nearbyStops: accessibleDestStops.length,
+        closestStop: accessibleDestStops[0]
+      },
+      anomalies,
+      warnings,
+      metadata: {
+        totalStopsFound: originStops.length + destStops.length,
+        accessibleOriginStops: accessibleOriginStops.length,
+        accessibleDestStops: accessibleDestStops.length,
+        routesCalculated: routes.length,
+        dataSource: 'OpenStreetMap + OpenRouteService',
+        timestamp: new Date().toISOString()
+      }
     };
   }
-}
 
-/* ==================== TRANSPORT PUBLIC SERVICE ==================== */
-class PublicTransportService {
-  static getTransportLines() {
-    return {
-      tramway: [
-        { id: 'T1', name: 'Tramway Ligne 1', color: '#0066cc', stations: 48 },
-        { id: 'T2', name: 'Tramway Ligne 2', color: '#00cc66', stations: 28 }
-      ],
-      bus: [
-        { id: 'M1', name: 'Bus M1', type: 'express', color: '#cc0000' },
-        { id: 'M3', name: 'Bus M3', type: 'express', color: '#cc0000' },
-        { id: 'M5', name: 'Bus M5', type: 'express', color: '#cc0000' },
-        { id: 'L10', name: 'Bus L10', type: 'local', color: '#0099cc' },
-        { id: 'L20', name: 'Bus L20', type: 'local', color: '#0099cc' },
-        { id: 'L32', name: 'Bus L32', type: 'local', color: '#0099cc' }
-      ]
-    };
+  static calculateRealScore(route, originDensity, destDensity) {
+    let score = 100;
+
+    // Penalize long total duration (weight: high)
+    score -= (route.totalDuration / 60) * 0.5; // -0.5 per minute
+
+    // Penalize long walking distances (weight: medium)
+    score -= (route.totalWalkingDistance / 100) * 1.5; // -1.5 per 100m
+
+    // Penalize transfers (weight: high)
+    score -= route.transfers * 10;
+
+    // Bonus for high-density areas (better connectivity expected)
+    const avgDensity = (originDensity.densityScore + destDensity.densityScore) / 2;
+    if (avgDensity > 70) score += 5;
+
+    return Math.max(0, Math.min(100, Math.round(score * 10) / 10));
   }
 }
 
@@ -309,8 +497,15 @@ app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
     redis: redisClient?.isOpen || false,
-    openrouteservice: config.openRouteServiceKey !== '5b3ce3597851110001cf6248YOUR_KEY_HERE',
-    tomtom: config.tomtomApiKey !== 'YOUR_TOMTOM_API_KEY',
+    apis: {
+      openrouteservice: config.openRouteServiceKey !== '5b3ce3597851110001cf6248YOUR_KEY_HERE',
+      tomtom: config.tomtomApiKey !== 'YOUR_TOMTOM_API_KEY',
+      transitland: config.transitlandApiKey !== 'YOUR_TRANSITLAND_KEY'
+    },
+    config: {
+      maxWalkingDistance: config.maxWalkingDistance,
+      walkingSpeed: config.walkingSpeed
+    },
     timestamp: new Date().toISOString()
   });
 });
@@ -334,21 +529,42 @@ app.get('/api/geocode', async (req, res) => {
   }
 });
 
-app.get('/api/traffic', async (req, res) => {
+app.get('/api/density', async (req, res) => {
   try {
-    const { lat, lon } = req.query;
+    const { lat, lon, radius } = req.query;
     if (!lat || !lon) {
       return res.status(400).json({ error: 'Paramètres lat et lon requis' });
     }
 
-    const traffic = await TomTomTrafficService.getRealTimeTraffic(
+    const density = await UrbanDensityService.calculateRealDensity(
       parseFloat(lat),
-      parseFloat(lon)
+      parseFloat(lon),
+      radius ? parseInt(radius) : 500
     );
 
-    res.json(traffic);
+    res.json(density);
   } catch (err) {
-    logger.error('Traffic error:', err.message);
+    logger.error('Density error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/transit/nearby', async (req, res) => {
+  try {
+    const { lat, lon, radius } = req.query;
+    if (!lat || !lon) {
+      return res.status(400).json({ error: 'Paramètres lat et lon requis' });
+    }
+
+    const transit = await PublicTransportService.getTransitLinesNearby(
+      parseFloat(lat),
+      parseFloat(lon),
+      radius ? parseInt(radius) : 1000
+    );
+
+    res.json(transit);
+  } catch (err) {
+    logger.error('Transit error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -371,23 +587,15 @@ app.post('/api/routes/optimize', async (req, res) => {
       return res.status(404).json({ error: 'Adresse introuvable' });
     }
 
-    const route = await OpenRouteService.getRoute(o.lat, o.lon, d.lat, d.lon);
-    const routeTraffic = await TomTomTrafficService.getRouteTraffic(route.coordinates);
-    const transportLines = PublicTransportService.getTransportLines();
+    const result = await RouteOptimizer.optimizeRoute(o, d);
 
-    res.json({ 
-      origin: o, 
-      destination: d, 
-      route: {
-        ...route,
-        traffic: routeTraffic
-      },
-      transportLines,
-      message: route.fallback ? 'Itinéraire calculé en mode fallback (ORS indisponible)' : null
-    });
+    res.json(result);
   } catch (err) {
-    logger.error(err.message);
-    res.status(500).json({ error: err.message });
+    logger.error('Optimization error:', err.message);
+    res.status(500).json({ 
+      error: err.message,
+      type: 'OPTIMIZATION_ERROR'
+    });
   }
 });
 
@@ -396,12 +604,12 @@ app.use((req, res) => res.status(404).json({ error: 'Route non trouvée' }));
 /* ==================== SERVER ==================== */
 app.listen(config.port, () => {
   logger.info(`🚀 Backend démarré sur le port ${config.port}`);
+  logger.info('📊 Mode: DONNÉES RÉELLES UNIQUEMENT');
+  logger.info('📍 Sources: OpenStreetMap, OpenRouteService, Overpass API');
+  
   if (config.openRouteServiceKey === '5b3ce3597851110001cf6248YOUR_KEY_HERE') {
-    logger.warn('⚠️ Clé API OpenRouteService non configurée - utilisera le mode fallback');
+    logger.error('❌ Clé API OpenRouteService REQUISE');
     logger.info('📝 Obtenez une clé gratuite sur https://openrouteservice.org/dev/#/signup');
-  }
-  if (config.tomtomApiKey === 'YOUR_TOMTOM_API_KEY') {
-    logger.warn('⚠️ Clé API TomTom non configurée - utilisera le mode fallback');
   }
 });
 
