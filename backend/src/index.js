@@ -25,7 +25,7 @@ const config = {
   port: process.env.PORT || 3000,
   redisUrl: process.env.REDIS_URL || 'redis://redis:6379',
   cacheTTL: 300,
-  tomtomApiKey: process.env.TOMTOM_API_KEY || 'YOUR_TOMTOM_API_KEY_HERE',
+  tomtomApiKey: process.env.TOMTOM_API_KEY || 'Cjx7i2N9ESmF9Sq8Bw6QtZ4FRJkCQMLy',
   maxWalkingDistance: 800,
   transferPenalty: 180,
   walkingSpeed: 1.4
@@ -82,18 +82,23 @@ class TomTomGeocodingService {
     if (cached) return cached;
 
     try {
+      logger.info(`Geocoding address: ${address}`);
       const res = await axios.get(
         `https://api.tomtom.com/search/2/geocode/${encodeURIComponent(address)}.json`,
         {
           params: {
             key: config.tomtomApiKey,
-            limit: 1
+            limit: 1,
+            countrySet: 'MA' // Filtre pour le Maroc
           },
           timeout: 10000
         }
       );
 
-      if (!res.data?.results?.[0]) return null;
+      if (!res.data?.results?.[0]) {
+        logger.warn(`No geocoding results for: ${address}`);
+        return null;
+      }
 
       const result = res.data.results[0];
       const geo = {
@@ -104,10 +109,14 @@ class TomTomGeocodingService {
         city: result.address.municipality
       };
 
+      logger.info(`Geocoded successfully: ${geo.display_name} (${geo.lat}, ${geo.lon})`);
       await CacheService.set(cacheKey, geo, 3600);
       return geo;
     } catch (err) {
       logger.error('TomTom Geocoding error:', err.message);
+      if (err.response) {
+        logger.error('Response data:', err.response.data);
+      }
       return null;
     }
   }
@@ -496,7 +505,7 @@ app.use((req, res) => res.status(404).json({ error: 'Route non trouvée' }));
 app.listen(config.port, () => {
   logger.info(`🚀 Backend démarré sur le port ${config.port}`);
   logger.info('📊 Mode: DONNÉES RÉELLES TOMTOM');
-  logger.info(`🔑 TomTom API: ${config.tomtomApiKey !== 'YOUR_TOMTOM_API_KEY_HERE' ? 'Configurée' : 'NON CONFIGURÉE'}`);
+  logger.info(`🔑 TomTom API: ${config.tomtomApiKey !== 'YOUR_TOMTOM_API_KEY_HERE' ? 'Configurée ✅' : 'NON CONFIGURÉE ❌'}`);
 });
 
 process.on('SIGTERM', async () => {

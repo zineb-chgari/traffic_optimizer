@@ -16,7 +16,7 @@ import {
 } from "lucide-react";
 
 const API_URL = "http://localhost:3000";
-const TOMTOM_API_KEY = "YOUR_TOMTOM_API_KEY_HERE";
+const TOMTOM_API_KEY = "Cjx7i2N9ESmF9Sq8Bw6QtZ4FRJkCQMLy";
 
 function TomTomMap({ route, origin, destination }) {
   const mapRef = useRef(null);
@@ -520,7 +520,7 @@ export default function TransportOptimizerApp() {
               <MapPin className="absolute left-3 top-3 w-5 h-5 text-green-500" />
               <input
                 className="border-2 border-gray-200 p-2.5 pl-10 rounded-lg w-full focus:outline-none focus:border-blue-500 text-sm"
-                placeholder="Origine (ex: Casa Port, Casablanca)"
+                placeholder="Origine (ex: Casa Voyageurs, Casablanca)"
                 value={origin}
                 onChange={e => setOrigin(e.target.value)}
                 onKeyPress={e => e.key === 'Enter' && handleSearch()}
