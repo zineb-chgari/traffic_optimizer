@@ -180,7 +180,10 @@ class UrbanDensityService {
         'https://overpass-api.de/api/interpreter',
         query,
         {
-          headers: { 'Content-Type': 'text/plain' },
+          headers: { 
+            'Content-Type': 'text/plain',
+            'User-Agent': 'TransportOptimizer/2.0'
+          },
           timeout: 15000
         }
       );
@@ -208,7 +211,18 @@ class UrbanDensityService {
       return density;
     } catch (err) {
       logger.error(`Urban density calculation error: ${err.message}`);
-      throw new Error('Urban density data unavailable');
+      // Return fallback data instead of throwing
+      return {
+        buildings: 0,
+        amenities: 0,
+        shops: 0,
+        totalFeatures: 0,
+        densityScore: 50,
+        radius,
+        source: 'fallback',
+        interpretation: 'unknown',
+        error: err.message
+      };
     }
   }
 }
@@ -435,8 +449,47 @@ class RouteOptimizer {
 
     // Step 4: Calculate urban density at both points
     logger.info('Analyzing urban density...');
-    const originDensity = await UrbanDensityService.calculateRealDensity(origin.lat, origin.lon);
-    const destDensity = await UrbanDensityService.calculateRealDensity(destination.lat, destination.lon);
+    let originDensity, destDensity;
+    
+    try {
+      originDensity = await UrbanDensityService.calculateRealDensity(origin.lat, origin.lon);
+    } catch (err) {
+      logger.warn(`Could not calculate origin density: ${err.message}`);
+      warnings.push({
+        type: 'DENSITY_CALCULATION_FAILED',
+        message: `Origin density data unavailable: ${err.message}`
+      });
+      originDensity = {
+        buildings: 0,
+        amenities: 0,
+        shops: 0,
+        totalFeatures: 0,
+        densityScore: 50,
+        radius: 500,
+        source: 'fallback',
+        interpretation: 'unknown'
+      };
+    }
+    
+    try {
+      destDensity = await UrbanDensityService.calculateRealDensity(destination.lat, destination.lon);
+    } catch (err) {
+      logger.warn(`Could not calculate destination density: ${err.message}`);
+      warnings.push({
+        type: 'DENSITY_CALCULATION_FAILED',
+        message: `Destination density data unavailable: ${err.message}`
+      });
+      destDensity = {
+        buildings: 0,
+        amenities: 0,
+        shops: 0,
+        totalFeatures: 0,
+        densityScore: 50,
+        radius: 500,
+        source: 'fallback',
+        interpretation: 'unknown'
+      };
+    }
 
     // Step 5: Find common routes between stops
     logger.info('Finding common transit routes...');
