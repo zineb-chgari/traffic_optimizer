@@ -11,7 +11,10 @@ import {
   CheckCircle,
   XCircle,
   Info,
-  Building
+  Building,
+  ArrowRight,
+  Footprints,
+  RefreshCw
 } from "lucide-react";
 
 const API_URL = "http://localhost:3000";
@@ -77,7 +80,6 @@ function LeafletMap({ route, origin, destination }) {
     markersRef.current.forEach(layer => map.removeLayer(layer));
     markersRef.current = [];
 
-    // Draw route
     const allCoords = route.coordinates.map(c => [c[0], c[1]]);
     
     const shadowLine = window.L.polyline(allCoords, {
@@ -98,7 +100,6 @@ function LeafletMap({ route, origin, destination }) {
     }).addTo(map);
     markersRef.current.push(mainLine);
 
-    // Origin marker
     const startIcon = window.L.divIcon({
       className: 'custom-marker',
       html: `
@@ -116,7 +117,6 @@ function LeafletMap({ route, origin, destination }) {
     }).addTo(map);
     markersRef.current.push(startMarker);
 
-    // Destination marker
     const endIcon = window.L.divIcon({
       className: 'custom-marker',
       html: `
@@ -137,7 +137,6 @@ function LeafletMap({ route, origin, destination }) {
     }).addTo(map);
     markersRef.current.push(endMarker);
 
-    // Transit stops
     if (route.originStop) {
       const stopIcon = window.L.divIcon({
         className: 'custom-marker',
@@ -151,7 +150,7 @@ function LeafletMap({ route, origin, destination }) {
       const originStopMarker = window.L.marker([route.originStop.lat, route.originStop.lon], { 
         icon: stopIcon 
       }).addTo(map);
-      originStopMarker.bindPopup(`<strong>${route.originStop.name}</strong><br/>Origin Stop`);
+      originStopMarker.bindPopup(`<strong>${route.originStop.name}</strong><br/>Arrêt de départ`);
       markersRef.current.push(originStopMarker);
     }
 
@@ -168,7 +167,7 @@ function LeafletMap({ route, origin, destination }) {
       const destStopMarker = window.L.marker([route.destStop.lat, route.destStop.lon], { 
         icon: stopIcon 
       }).addTo(map);
-      destStopMarker.bindPopup(`<strong>${route.destStop.name}</strong><br/>Destination Stop`);
+      destStopMarker.bindPopup(`<strong>${route.destStop.name}</strong><br/>Arrêt d'arrivée`);
       markersRef.current.push(destStopMarker);
     }
 
@@ -179,6 +178,135 @@ function LeafletMap({ route, origin, destination }) {
   return (
     <div className="relative h-full rounded-lg overflow-hidden shadow-lg">
       <div ref={mapRef} className="w-full h-full"></div>
+    </div>
+  );
+}
+
+function RouteSteps({ route }) {
+  if (!route) return null;
+
+  const steps = [];
+
+  // Étape 1: Marche jusqu'à l'arrêt
+  steps.push({
+    type: 'walk',
+    icon: <Footprints className="w-5 h-5 text-gray-600" />,
+    title: "Marchez jusqu'à l'arrêt",
+    subtitle: `Marche à pied • ${Math.round(route.originStop.walkingDuration / 60)} min (${route.originStop.walkingDistance}m)`,
+    details: route.originStop.name,
+    duration: route.originStop.walkingDuration,
+    distance: route.originStop.walkingDistance,
+    color: "bg-gray-50 border-gray-200"
+  });
+
+  // Étape 2: Prendre le transport
+  const transitLines = route.routeId.split('-');
+  transitLines.forEach((line, idx) => {
+    steps.push({
+      type: 'transit',
+      icon: <Bus className="w-5 h-5 text-white" />,
+      title: `Prenez ${line}`,
+      subtitle: `${route.transfers > 0 && idx < transitLines.length - 1 ? (transitLines.length - idx - 1) + ' arrêt(s)' : Math.round(route.transitDuration / 60) + ' min de trajet'}`,
+      details: `De ${idx === 0 ? route.originStop.name : 'Arrêt de correspondance'} à ${idx === transitLines.length - 1 ? route.destStop.name : 'Arrêt de correspondance'}`,
+      duration: route.transitDuration / transitLines.length,
+      color: "bg-red-500 text-white",
+      lineColor: "border-red-500",
+      badgeText: line
+    });
+
+    // Ajouter correspondance si nécessaire
+    if (idx < transitLines.length - 1) {
+      steps.push({
+        type: 'transfer',
+        icon: <RefreshCw className="w-5 h-5 text-orange-600" />,
+        title: "Correspondance - Changez de ligne",
+        subtitle: `⚠️ Temps de correspondance: 3 min`,
+        details: `Changez vers ${transitLines[idx + 1]}`,
+        duration: 180,
+        color: "bg-orange-50 border-orange-300"
+      });
+    }
+  });
+
+  // Étape finale: Marche jusqu'à la destination
+  steps.push({
+    type: 'walk',
+    icon: <Footprints className="w-5 h-5 text-gray-600" />,
+    title: "Marchez jusqu'à la destination",
+    subtitle: `Marche à pied • ${Math.round(route.destStop.walkingDuration / 60)} min (${route.destStop.walkingDistance}m)`,
+    details: "Arrivée à destination",
+    duration: route.destStop.walkingDuration,
+    distance: route.destStop.walkingDistance,
+    color: "bg-gray-50 border-gray-200"
+  });
+
+  return (
+    <div className="bg-white rounded-xl shadow-lg p-6">
+      <h2 className="text-xl font-bold text-gray-800 mb-4 flex items-center gap-2">
+        <Navigation className="w-5 h-5 text-blue-600" />
+        Itinéraire détaillé
+      </h2>
+
+      <div className="space-y-3">
+        {steps.map((step, index) => (
+          <div key={index} className="flex gap-3">
+            {/* Timeline */}
+            <div className="flex flex-col items-center">
+              <div className={`w-10 h-10 rounded-full flex items-center justify-center ${step.color} ${step.lineColor ? 'border-2 ' + step.lineColor : 'border-2'} shadow-sm`}>
+                {step.icon}
+              </div>
+              {index < steps.length - 1 && (
+                <div className={`w-0.5 h-12 ${step.type === 'transit' ? 'bg-red-300' : 'bg-gray-300'} my-1`}></div>
+              )}
+            </div>
+
+            {/* Content */}
+            <div className="flex-1 pb-4">
+              <div className="flex items-start justify-between">
+                <div className="flex-1">
+                  <div className="font-bold text-gray-800 flex items-center gap-2">
+                    {step.title}
+                    {step.badgeText && (
+                      <span className="bg-red-600 text-white text-xs font-bold px-2 py-0.5 rounded">
+                        {step.badgeText}
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-sm text-gray-600 mt-0.5">{step.subtitle}</div>
+                  <div className="text-xs text-gray-500 mt-1">{step.details}</div>
+                </div>
+                
+                {step.duration && (
+                  <div className="text-right ml-4">
+                    <div className="text-sm font-bold text-gray-700">
+                      {Math.round(step.duration / 60)} min
+                    </div>
+                    {step.distance && (
+                      <div className="text-xs text-gray-500">{step.distance}m</div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Résumé total */}
+      <div className="mt-6 pt-4 border-t grid grid-cols-3 gap-4 text-center">
+        <div>
+          <div className="text-2xl font-bold text-blue-600">{Math.round(route.totalDuration / 60)}</div>
+          <div className="text-xs text-gray-600">minutes total</div>
+        </div>
+        <div>
+          <div className="text-2xl font-bold text-green-600">{route.transfers}</div>
+          <div className="text-xs text-gray-600">correspondance(s)</div>
+        </div>
+        <div>
+          <div className="text-2xl font-bold text-purple-600">{route.totalWalkingDistance}m</div>
+          <div className="text-xs text-gray-600">marche total</div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -234,7 +362,7 @@ function RouteCard({ route, selected, onClick }) {
   );
 }
 
-function DensityInfo({ density }) {
+function DensityInfo({ density, label }) {
   if (!density) return null;
 
   const getColor = () => {
@@ -247,7 +375,7 @@ function DensityInfo({ density }) {
     <div className="bg-white rounded-lg p-4 shadow">
       <div className="flex items-center gap-2 mb-3">
         <Building className="w-5 h-5 text-gray-600" />
-        <h3 className="font-bold text-gray-800">Densité Urbaine</h3>
+        <h3 className="font-bold text-gray-800">Densité - {label}</h3>
       </div>
       
       <div className="grid grid-cols-2 gap-3 text-sm">
@@ -323,7 +451,7 @@ function MetadataPanel({ metadata }) {
     <div className="bg-white rounded-lg p-4 shadow">
       <h3 className="font-bold text-gray-800 mb-3 flex items-center gap-2">
         <TrendingUp className="w-5 h-5 text-blue-500" />
-        Métadonnées de Calcul
+        Métadonnées
       </h3>
       
       <div className="space-y-2 text-sm">
@@ -413,7 +541,7 @@ export default function TransportOptimizerApp() {
             </div>
             <div>
               <h1 className="text-2xl font-bold text-gray-800">Transport Optimizer</h1>
-      
+              <p className="text-sm text-gray-600">Itinéraires en temps réel avec détails</p>
             </div>
           </div>
 
@@ -453,7 +581,7 @@ export default function TransportOptimizerApp() {
             ) : (
               <>
                 <Search className="w-4 h-4" />
-                Calculer avec données réelles
+                Calculer l'itinéraire
               </>
             )}
           </button>
@@ -472,11 +600,11 @@ export default function TransportOptimizerApp() {
           <div className="grid lg:grid-cols-4 gap-4">
             <div className="space-y-4">
               {routes.length > 0 ? (
-                routes.map(route => (
+                routes.map((route, idx) => (
                   <RouteCard
-                    key={route.originStop.id + route.destStop.id}
+                    key={idx}
                     route={route}
-                    selected={selectedRoute?.originStop?.id === route.originStop.id && selectedRoute?.destStop?.id === route.destStop.id}
+                    selected={selectedRoute === route}
                     onClick={() => setSelectedRoute(route)}
                   />
                 ))
@@ -507,59 +635,11 @@ export default function TransportOptimizerApp() {
               </div>
 
               <div className="grid md:grid-cols-2 gap-4">
-                <DensityInfo density={result.origin?.density} />
-                <DensityInfo density={result.destination?.density} />
+                <DensityInfo density={result.origin?.density} label="Origine" />
+                <DensityInfo density={result.destination?.density} label="Destination" />
               </div>
 
-              {selectedRoute && (
-                <div className="bg-white rounded-xl p-6 shadow-lg">
-                  <h2 className="text-xl font-bold text-gray-800 mb-4">Détails de l'Itinéraire</h2>
-                  
-                  <div className="grid md:grid-cols-2 gap-6">
-                    <div>
-                      <h3 className="font-bold text-gray-700 mb-2">Arrêt de Départ</h3>
-                      <div className="text-sm space-y-1">
-                        <div><strong>Nom:</strong> {selectedRoute.originStop.name}</div>
-                        <div><strong>Type:</strong> {selectedRoute.originStop.type}</div>
-                        <div><strong>Distance de marche:</strong> {selectedRoute.originStop.walkingDistance}m</div>
-                        <div><strong>Temps de marche:</strong> {Math.round(selectedRoute.originStop.walkingDuration / 60)}min</div>
-                      </div>
-                    </div>
-                    
-                    <div>
-                      <h3 className="font-bold text-gray-700 mb-2">Arrêt d'Arrivée</h3>
-                      <div className="text-sm space-y-1">
-                        <div><strong>Nom:</strong> {selectedRoute.destStop.name}</div>
-                        <div><strong>Type:</strong> {selectedRoute.destStop.type}</div>
-                        <div><strong>Distance de marche:</strong> {selectedRoute.destStop.walkingDistance}m</div>
-                        <div><strong>Temps de marche:</strong> {Math.round(selectedRoute.destStop.walkingDuration / 60)}min</div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="mt-6 pt-6 border-t">
-                    <h3 className="font-bold text-gray-700 mb-3">Résumé du Trajet</h3>
-                    <div className="grid grid-cols-4 gap-4 text-center">
-                      <div className="bg-blue-50 p-3 rounded-lg">
-                        <div className="text-2xl font-bold text-blue-600">{Math.round(selectedRoute.totalDuration / 60)}</div>
-                        <div className="text-xs text-gray-600">minutes</div>
-                      </div>
-                      <div className="bg-green-50 p-3 rounded-lg">
-                        <div className="text-2xl font-bold text-green-600">{Math.round(selectedRoute.transitDistance / 1000 * 10) / 10}</div>
-                        <div className="text-xs text-gray-600">km transit</div>
-                      </div>
-                      <div className="bg-purple-50 p-3 rounded-lg">
-                        <div className="text-2xl font-bold text-purple-600">{selectedRoute.totalWalkingDistance}</div>
-                        <div className="text-xs text-gray-600">m marche</div>
-                      </div>
-                      <div className="bg-orange-50 p-3 rounded-lg">
-                        <div className="text-2xl font-bold text-orange-600">{selectedRoute.score}</div>
-                        <div className="text-xs text-gray-600">score</div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )}
+              {selectedRoute && <RouteSteps route={selectedRoute} />}
             </div>
           </div>
         )}
