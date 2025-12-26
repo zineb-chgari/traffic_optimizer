@@ -5,60 +5,32 @@ pipeline {
         PATH = "C:\\Program Files\\Docker\\Docker\\resources\\bin;C:\\ProgramData\\chocolatey\\bin;${env.PATH}"
         CLUSTER_NAME = 'k8s-terraform'
         BUILD_TAG = "${BUILD_NUMBER}"
-        // Configuration Git pour éviter les timeouts
-        GIT_HTTP_POST_BUFFER = '524288000'
-        GIT_HTTP_LOW_SPEED_LIMIT = '1000'
-        GIT_HTTP_LOW_SPEED_TIME = '600'
     }
     
     options {
         timeout(time: 30, unit: 'MINUTES')
         buildDiscarder(logRotator(numToKeepStr: '10'))
-        // Retry automatique en cas d'échec du checkout
-        skipDefaultCheckout(true)
     }
     
     stages {
-        stage('Checkout SCM with Retry') {
+        stage('Checkout SCM') {
             steps {
                 script {
-                    // Nettoyer le workspace corrompu
+                    // Nettoyer le workspace corrompu si nécessaire
                     bat '''
-                        echo Cleaning corrupted workspace...
+                        echo Cleaning workspace...
                         if exist ".git" (
-                            echo Removing corrupted .git directory...
-                            rmdir /s /q .git 2>nul || echo Failed to remove .git
+                            echo Removing old .git directory...
+                            rmdir /s /q .git 2>nul || echo Git directory removed
                         )
                     '''
                     
-                    // Configurer Git pour de meilleures performances
-                    bat '''
-                        git config --global http.postBuffer 524288000
-                        git config --global http.lowSpeedLimit 1000
-                        git config --global http.lowSpeedTime 600
-                        git config --global core.compression 0
-                    '''
-                    
-                    // Retry du checkout
+                    // Utiliser le checkout Jenkins natif (pas besoin de git.exe)
                     retry(3) {
-                        checkout([
-                            $class: 'GitSCM',
-                            branches: [[name: '*/main']],
-                            extensions: [
-                                [$class: 'CloneOption', 
-                                 depth: 1, 
-                                 noTags: false, 
-                                 reference: '', 
-                                 shallow: true,
-                                 timeout: 20
-                                ],
-                                [$class: 'CheckoutOption', timeout: 20]
-                            ],
-                            userRemoteConfigs: [[
-                                url: 'https://github.com/zineb-chgari/traffic_optimizer.git'
-                            ]]
-                        ])
+                        checkout scm
                     }
+                    
+                    echo "✓ Code checked out successfully!"
                 }
             }
         }
@@ -609,7 +581,6 @@ pipeline {
         always {
             script {
                 echo 'Pipeline execution completed - Cleaning up...'
-                // Supprimer -it pour éviter l'erreur de contexte
                 try {
                     bat 'docker system prune -f || exit 0'
                 } catch (Exception e) {
