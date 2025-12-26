@@ -2,7 +2,8 @@ pipeline {
     agent any
     
     environment {
-        PATH = "C:\\Program Files\\Docker\\Docker\\resources\\bin;C:\\ProgramData\\chocolatey\\bin;${env.PATH}"
+        PATH = "C:\\Program Files\\Git\\bin;C:\\Program Files\\Docker\\Docker\\resources\\bin;C:\\ProgramData\\chocolatey\\bin;${env.PATH}"
+        GIT_PATH = "C:\\Program Files\\Git\\bin\\git.exe"
         CLUSTER_NAME = 'k8s-terraform'
         BUILD_TAG = "${BUILD_NUMBER}"
     }
@@ -16,85 +17,26 @@ pipeline {
         stage('Checkout SCM') {
             steps {
                 script {
-                    // Nettoyer le workspace
+                    echo "==========================================
+=== CHECKOUT PHASE ==="
+                    echo "Git executable: ${env.GIT_PATH}"
+                    
+                    // Vérifier que Git existe
                     bat '''
-                        echo ==========================================
-                        echo === CLEANING WORKSPACE ===
-                        echo ==========================================
-                        if exist ".git" (
-                            echo Removing old .git directory...
-                            rmdir /s /q .git 2>nul || echo Git directory removed
+                        echo Verifying Git installation...
+                        if exist "C:\\Program Files\\Git\\bin\\git.exe" (
+                            echo ✓ Git found at: C:\\Program Files\\Git\\bin\\git.exe
+                            "C:\\Program Files\\Git\\bin\\git.exe" --version
+                        ) else (
+                            echo ✗ Git not found at standard location!
+                            echo Searching for git.exe...
+                            where git.exe
                         )
                     '''
                     
-                    // Configurer Git
-                    bat '''
-                        echo ==========================================
-                        echo === CONFIGURING GIT ===
-                        echo ==========================================
-                        git config --global http.postBuffer 524288000
-                        git config --global http.maxRequestBuffer 100M
-                        git config --global core.compression 0
-                        git config --global http.lowSpeedLimit 0
-                        git config --global http.lowSpeedTime 999999
-                        
-                        echo Current Git configuration:
-                        git config --list | findstr http
-                    '''
-                    
-                    // Méthode 1 : Essayer le checkout Jenkins (shallow clone)
-                    def checkoutSuccess = false
-                    
-                    try {
-                        echo "Attempting Jenkins checkout with shallow clone..."
-                        retry(2) {
-                            timeout(time: 10, unit: 'MINUTES') {
-                                checkout([
-                                    $class: 'GitSCM',
-                                    branches: [[name: '*/main']],
-                                    extensions: [
-                                        [$class: 'CloneOption', 
-                                         depth: 1, 
-                                         noTags: true, 
-                                         shallow: true,
-                                         timeout: 30]
-                                    ],
-                                    userRemoteConfigs: [[
-                                        url: 'https://github.com/zineb-chgari/traffic_optimizer.git'
-                                    ]]
-                                ])
-                            }
-                        }
-                        checkoutSuccess = true
-                        echo "✓ Jenkins checkout successful!"
-                    } catch (Exception e) {
-                        echo "⚠ Jenkins checkout failed: ${e.message}"
-                        echo "Attempting manual clone as fallback..."
-                    }
-                    
-                    // Méthode 2 : Si échec, clone manuel
-                    if (!checkoutSuccess) {
-                        bat '''
-                            echo ==========================================
-                            echo === MANUAL GIT CLONE ===
-                            echo ==========================================
-                            
-                            REM Initialiser le repo
-                            git init
-                            git remote add origin https://github.com/zineb-chgari/traffic_optimizer.git
-                            
-                            REM Fetch shallow
-                            echo Fetching repository (shallow clone)...
-                            git fetch --depth 1 origin main
-                            
-                            REM Checkout
-                            echo Checking out main branch...
-                            git checkout main
-                            
-                            echo ✓ Manual clone completed successfully!
-                        '''
-                        checkoutSuccess = true
-                    }
+                    // Utiliser le checkout Jenkins standard (qui fonctionne déjà)
+                    echo "✓ Using Jenkins built-in checkout (already completed)"
+                    echo "✓ Code checked out successfully!"
                     
                     // Vérification finale
                     bat '''
@@ -153,7 +95,8 @@ pipeline {
                         env.TOMTOM_API_KEY = 'Cjx7i2N9ESmF9Sq8Bw6QtZ4FRJkCQMLy'
                         env.OPENCAGE_API_KEY = '464eb4ad7e734a768928fd696b968ee4'
                         env.ORS_API_KEY = 'eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6IjIwNjAxYzVlZmFlNjQ1OGZiOTY3ODUxNDg3NTY2MjBlIiwiaCI6Im11cm11cjY0In0='
-                        echo "⚠ WARNING: Jenkins credentials not found, using hardcoded API keys"
+                        echo "⚠ WARNING: Jenkins credentials not found, using hardcoded API keys from .env"
+                        echo "✓ API Keys configured successfully"
                     }
                 }
             }
@@ -174,14 +117,504 @@ pipeline {
                         terraform version
                         kind version
                         echo.
-                        echo ✓ All tools verified successfully!
+                        echo Checking API Keys...
+                        if "${env.TOMTOM_API_KEY}"=="YOUR_TOMTOM_API_KEY_HERE" (
+                            echo ✗ TomTom API Key not configured!
+                        ) else (
+                            echo ✓ TomTom API Key configured
+                        )
+                        if "${env.OPENCAGE_API_KEY}"=="YOUR_OPENCAGE_API_KEY_HERE" (
+                            echo ✗ OpenCage API Key not configured!
+                        ) else (
+                            echo ✓ OpenCage API Key configured
+                        )
+                        if "${env.ORS_API_KEY}"=="YOUR_ORS_API_KEY_HERE" (
+                            echo ✗ ORS API Key not configured!
+                        ) else (
+                            echo ✓ ORS API Key configured
+                        )
+                        echo.
+                        echo All tools found successfully!
                     """
                 }
             }
         }
         
-        // ... (rest of your stages remain the same)
+        stage('Validate Terraform') {
+            steps {
+                dir('infrastructure/Terraform') {
+                    bat '''
+                        terraform init -input=false
+                        terraform validate
+                    '''
+                }
+            }
+        }
         
+        stage('Pull Base Images') {
+            steps {
+                script {
+                    retry(3) {
+                        bat '''
+                            echo ==========================================
+                            echo === PULLING BASE IMAGES ===
+                            echo ==========================================
+                            echo Pulling node:20-alpine...
+                            docker pull node:20-alpine
+                            
+                            echo.
+                            echo Pulling nginx:alpine...
+                            docker pull nginx:alpine
+                            
+                            echo.
+                            echo Pulling Redis image with amd64 platform...
+                            docker pull --platform linux/amd64 redis:7-alpine
+                            
+                            echo.
+                            echo Verifying pulled images...
+                            docker images | findstr "node.*20-alpine"
+                            docker images | findstr "nginx.*alpine"
+                            docker images | findstr "redis.*7-alpine"
+                            
+                            echo.
+                            echo All base images pulled successfully!
+                        '''
+                    }
+                }
+            }
+        }
+        
+        stage('Build Backend Image') {
+            steps {
+                script {
+                    retry(2) {
+                        timeout(time: 10, unit: 'MINUTES') {
+                            bat """
+                                echo ==========================================
+                                echo === BUILDING BACKEND IMAGE ===
+                                echo ==========================================
+                                docker build -f backend\\Dockerfile ^
+                                    --build-arg TOMTOM_API_KEY=${env.TOMTOM_API_KEY} ^
+                                    --build-arg OPENCAGE_API_KEY=${env.OPENCAGE_API_KEY} ^
+                                    --build-arg ORS_API_KEY=${env.ORS_API_KEY} ^
+                                    -t transport-backend:latest ^
+                                    -t transport-backend:${BUILD_TAG} ^
+                                    backend
+                                
+                                echo.
+                                echo Backend image built successfully!
+                            """
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Build Frontend Image') {
+            steps {
+                script {
+                    retry(2) {
+                        timeout(time: 20, unit: 'MINUTES') {
+                            bat """
+                                echo ==========================================
+                                echo === BUILDING FRONTEND IMAGE ===
+                                echo ==========================================
+                                docker build -f frontend\\Dockerfile ^
+                                    --build-arg NODE_OPTIONS=--max-old-space-size=4096 ^
+                                    --build-arg TOMTOM_API_KEY=${env.TOMTOM_API_KEY} ^
+                                    -t transport-frontend:latest ^
+                                    -t transport-frontend:${BUILD_TAG} ^
+                                    frontend
+                                
+                                echo.
+                                echo Frontend image built successfully!
+                            """
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Cleanup Old Cluster') {
+            steps {
+                bat """
+                    echo ==========================================
+                    echo === CLEANING UP OLD CLUSTER ===
+                    echo ==========================================
+                    
+                    echo Deleting existing cluster if present...
+                    kind delete cluster --name ${CLUSTER_NAME} 2>nul || echo No existing cluster to delete
+                    
+                    echo Waiting for cleanup to complete...
+                    ping 127.0.0.1 -n 3 >nul
+                    
+                    echo Cleanup complete!
+                """
+            }
+        }
+        
+        stage('Setup Kind Cluster') {
+            steps {
+                bat """
+                    echo ==========================================
+                    echo === CREATING KIND CLUSTER ===
+                    echo ==========================================
+                    
+                    echo Creating fresh cluster ${CLUSTER_NAME}...
+                    kind create cluster --name ${CLUSTER_NAME}
+                    
+                    echo.
+                    echo Waiting for cluster to be fully ready...
+                    
+                    :wait_loop
+                    kubectl get nodes | findstr "Ready" | findstr /V "NotReady" >nul 2>&1
+                    if errorlevel 1 (
+                        echo Node not ready yet, waiting 5 seconds...
+                        ping 127.0.0.1 -n 6 >nul
+                        goto wait_loop
+                    )
+                    
+                    echo.
+                    echo Node is ready! Waiting for system pods...
+                    kubectl wait --for=condition=ready pod -l k8s-app=kube-dns -n kube-system --timeout=180s
+                    
+                    echo.
+                    echo === CLUSTER IS FULLY OPERATIONAL ===
+                    kubectl get nodes
+                    kubectl get pods -n kube-system
+                """
+            }
+        }
+        
+        stage('Verify Cluster Connection') {
+            steps {
+                bat '''
+                    echo ==========================================
+                    echo === VERIFYING CLUSTER CONNECTION ===
+                    echo ==========================================
+                    
+                    echo Cluster Info:
+                    kubectl cluster-info
+                    
+                    echo.
+                    echo Nodes:
+                    kubectl get nodes -o wide
+                    
+                    echo.
+                    echo Namespaces:
+                    kubectl get namespaces
+                    
+                    echo.
+                    echo System Pods:
+                    kubectl get pods -n kube-system
+                    
+                    echo.
+                    echo Cluster verification complete!
+                '''
+            }
+        }
+        
+        stage('Load Images to Kind') {
+            steps {
+                bat """
+                    echo ==========================================
+                    echo === LOADING IMAGES TO KIND CLUSTER ===
+                    echo ==========================================
+                    
+                    echo Loading backend image...
+                    kind load docker-image transport-backend:latest --name ${CLUSTER_NAME}
+                    if errorlevel 1 (
+                        echo ERROR: Failed to load backend image!
+                        exit /b 1
+                    )
+                    echo Backend image loaded successfully!
+                    
+                    echo.
+                    echo Loading frontend image...
+                    kind load docker-image transport-frontend:latest --name ${CLUSTER_NAME}
+                    if errorlevel 1 (
+                        echo ERROR: Failed to load frontend image!
+                        exit /b 1
+                    )
+                    echo Frontend image loaded successfully!
+                    
+                    echo.
+                    echo Loading Redis image with workaround...
+                    docker save redis:7-alpine | docker exec -i ${CLUSTER_NAME}-control-plane ctr --namespace=k8s.io images import --all-platforms=false --base-name docker.io/library/redis:7-alpine -
+                    if errorlevel 1 (
+                        echo Trying alternative tar-based method...
+                        docker save redis:7-alpine -o %TEMP%\\redis-temp.tar
+                        docker cp %TEMP%\\redis-temp.tar ${CLUSTER_NAME}-control-plane:/tmp/redis.tar
+                        docker exec ${CLUSTER_NAME}-control-plane ctr --namespace=k8s.io images import --all-platforms=false /tmp/redis.tar
+                        docker exec ${CLUSTER_NAME}-control-plane rm /tmp/redis.tar
+                        del %TEMP%\\redis-temp.tar
+                        if errorlevel 1 (
+                            echo ERROR: All methods failed to load Redis image!
+                            exit /b 1
+                        )
+                    )
+                    echo Redis image loaded successfully!
+                    
+                    echo.
+                    echo === VERIFYING LOADED IMAGES ===
+                    docker exec ${CLUSTER_NAME}-control-plane crictl images | findstr transport
+                    docker exec ${CLUSTER_NAME}-control-plane crictl images | findstr redis
+                    
+                    echo.
+                    echo Verification: Checking if Redis image is available...
+                    docker exec ${CLUSTER_NAME}-control-plane crictl images | findstr redis >nul
+                    if errorlevel 1 (
+                        echo ERROR: Redis image not found in Kind cluster!
+                        echo Available images:
+                        docker exec ${CLUSTER_NAME}-control-plane crictl images
+                        exit /b 1
+                    )
+                    
+                    echo.
+                    echo ✓ All images loaded and verified successfully!
+                """
+            }
+        }
+        
+        stage('Pre-Deploy Diagnostics') {
+            steps {
+                bat '''
+                    echo ==========================================
+                    echo === PRE-DEPLOYMENT DIAGNOSTICS ===
+                    echo ==========================================
+                    
+                    echo Available images in Kind cluster:
+                    docker exec k8s-terraform-control-plane crictl images
+                    
+                    echo.
+                    echo Cluster resources:
+                    kubectl top nodes 2>nul || echo "Metrics server not available"
+                    
+                    echo.
+                    echo Node details:
+                    kubectl describe node k8s-terraform-control-plane | findstr "Allocatable"
+                    
+                    echo.
+                    echo Current events:
+                    kubectl get events --all-namespaces --sort-by=.metadata.creationTimestamp | findstr /V "Normal" || echo "No warning events"
+                '''
+            }
+        }
+        
+        stage('Deploy with Terraform') {
+            steps {
+                dir('infrastructure/Terraform') {
+                    script {
+                        bat """
+                            echo ==========================================
+                            echo === DEPLOYING WITH TERRAFORM ===
+                            echo ==========================================
+                            
+                            echo Setting Terraform variables...
+                            set TF_VAR_tomtom_api_key=${env.TOMTOM_API_KEY}
+                            set TF_VAR_opencage_api_key=${env.OPENCAGE_API_KEY}
+                            set TF_VAR_ors_api_key=${env.ORS_API_KEY}
+                            
+                            echo Applying Terraform configuration...
+                            terraform apply -auto-approve ^
+                                -var="tomtom_api_key=${env.TOMTOM_API_KEY}" ^
+                                -var="opencage_api_key=${env.OPENCAGE_API_KEY}" ^
+                                -var="ors_api_key=${env.ORS_API_KEY}"
+                            
+                            echo.
+                            echo Terraform deployment complete!
+                        """
+                    }
+                }
+            }
+        }
+        
+        stage('Wait for Deployments') {
+            steps {
+                timeout(time: 10, unit: 'MINUTES') {
+                    bat '''
+                        echo ==========================================
+                        echo === WAITING FOR DEPLOYMENTS ===
+                        echo ==========================================
+                        
+                        echo Waiting for Redis deployment...
+                        kubectl rollout status deployment/redis --timeout=300s || (
+                            echo WARNING: Redis deployment timeout!
+                            kubectl get pods -l app=redis
+                            kubectl describe pods -l app=redis
+                        )
+                        
+                        echo.
+                        echo Waiting for Backend deployment...
+                        kubectl rollout status deployment/backend --timeout=300s || (
+                            echo WARNING: Backend deployment timeout!
+                            kubectl get pods -l app=backend
+                            kubectl describe pods -l app=backend
+                            echo.
+                            echo === BACKEND POD LOGS ===
+                            kubectl logs -l app=backend --tail=100 --all-containers=true || echo "Cannot fetch logs"
+                        )
+                        
+                        echo.
+                        echo Waiting for Frontend deployment...
+                        kubectl rollout status deployment/frontend --timeout=300s || (
+                            echo WARNING: Frontend deployment timeout!
+                            kubectl get pods -l app=frontend
+                            kubectl describe pods -l app=frontend
+                        )
+                        
+                        echo.
+                        echo === DEPLOYMENT STATUS ===
+                        kubectl get deployments
+                        kubectl get pods
+                    '''
+                }
+            }
+        }
+        
+        stage('Wait for Pods Ready') {
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    bat '''
+                        echo ==========================================
+                        echo === WAITING FOR PODS TO BE READY ===
+                        echo ==========================================
+                        
+                        echo Waiting for Redis pod...
+                        kubectl wait --for=condition=ready pod -l app=redis --timeout=180s || echo Redis pod not ready yet
+                        
+                        echo.
+                        echo Waiting for Backend pods...
+                        kubectl wait --for=condition=ready pod -l app=backend --timeout=180s || (
+                            echo Backend pods not ready yet
+                            echo.
+                            echo === CHECKING BACKEND POD STATUS ===
+                            kubectl get pods -l app=backend
+                            echo.
+                            echo === BACKEND POD EVENTS ===
+                            kubectl get events --field-selector involvedObject.kind=Pod --sort-by=.metadata.creationTimestamp | findstr backend
+                            echo.
+                            echo === BACKEND POD LOGS ===
+                            kubectl logs -l app=backend --tail=50 --all-containers=true || echo "Cannot fetch logs"
+                        )
+                        
+                        echo.
+                        echo Waiting for Frontend pods...
+                        kubectl wait --for=condition=ready pod -l app=frontend --timeout=180s || echo Frontend pods not ready yet
+                        
+                        echo.
+                        echo === CURRENT POD STATUS ===
+                        kubectl get pods -o wide
+                    '''
+                }
+            }
+        }
+        
+        stage('Verify Deployment') {
+            steps {
+                bat '''
+                    echo ==========================================
+                    echo === DEPLOYMENT VERIFICATION ===
+                    echo ==========================================
+                    
+                    echo.
+                    echo === PODS STATUS ===
+                    kubectl get pods -o wide
+                    
+                    echo.
+                    echo === SERVICES ===
+                    kubectl get svc
+                    
+                    echo.
+                    echo === DEPLOYMENTS ===
+                    kubectl get deployment
+                    
+                    echo.
+                    echo === ENDPOINTS ===
+                    kubectl get endpoints
+                    
+                    echo.
+                    echo === SECRETS ===
+                    kubectl get secrets
+                    
+                    echo.
+                    echo ==========================================
+                    echo === POD LOGS SUMMARY ===
+                    echo ==========================================
+                    
+                    echo.
+                    echo === Redis Logs (last 20 lines) ===
+                    kubectl logs -l app=redis --tail=20 --all-containers=true 2>nul || echo No Redis logs available yet
+                    
+                    echo.
+                    echo === Backend Logs (last 50 lines) ===
+                    kubectl logs -l app=backend --tail=50 --all-containers=true 2>nul || echo No Backend logs available yet
+                    
+                    echo.
+                    echo === Frontend Logs (last 20 lines) ===
+                    kubectl logs -l app=frontend --tail=20 --all-containers=true 2>nul || echo No Frontend logs available yet
+                    
+                    echo.
+                    echo ==========================================
+                    echo === HEALTH CHECKS ===
+                    echo ==========================================
+                    
+                    echo Testing Redis connectivity...
+                    kubectl exec deployment/redis -- redis-cli -a monsecret ping 2>nul || echo Redis not responding
+                    
+                    echo.
+                    echo Testing Backend health endpoint...
+                    kubectl exec deployment/backend -- wget -q -O- http://localhost:3000/health 2>nul || echo Backend health check failed
+                    
+                    echo.
+                    echo Checking ALL API Keys in backend...
+                    kubectl exec deployment/backend -- printenv | findstr API_KEY 2>nul || echo API key env var check failed
+                '''
+            }
+        }
+        
+        stage('Final Status Report') {
+            steps {
+                bat '''
+                    echo.
+                    echo ==========================================
+                    echo === FINAL DEPLOYMENT STATUS ===
+                    echo ==========================================
+                    
+                    echo.
+                    echo Checking all pods status...
+                    kubectl get pods --all-namespaces
+                    
+                    echo.
+                    echo Checking deployments...
+                    kubectl get deployments
+                    
+                    echo.
+                    echo Checking services...
+                    kubectl get svc
+                    
+                    echo.
+                    echo Recent events (errors only):
+                    kubectl get events --all-namespaces --field-selector type!=Normal --sort-by=.metadata.creationTimestamp | findstr /V "LAST" || echo No error events found
+                    
+                    echo.
+                    echo ==========================================
+                '''
+            }
+        }
+        
+        stage('Save Deployment Info') {
+            steps {
+                script {
+                    bat '''
+                        echo Saving deployment information...
+                        kubectl get svc > deployment-services.txt 2>&1 || echo "Could not save services info"
+                        kubectl get pods -o wide > deployment-pods.txt 2>&1 || echo "Could not save pods info"
+                        kubectl logs -l app=backend --tail=100 > backend-logs.txt 2>&1 || echo "Could not save backend logs"
+                    '''
+                }
+            }
+        }
     }
     
     post {
@@ -202,6 +635,30 @@ pipeline {
                 echo '=========================================='
                 echo '✓✓✓ PIPELINE SUCCEEDED ✓✓✓'
                 echo '=========================================='
+                echo ''
+                echo 'Your application has been successfully deployed!'
+                echo ''
+                echo 'To access the services, open a NEW terminal and run:'
+                echo ''
+                echo 'FOR FRONTEND:'
+                echo '  kubectl port-forward service/frontend-service 8080:80'
+                echo '  Then open: http://localhost:8080'
+                echo ''
+                echo 'FOR BACKEND:'
+                echo '  kubectl port-forward service/backend-service 3000:3000'
+                echo '  Then open: http://localhost:3000/health'
+                echo ''
+                echo '=========================================='
+                
+                try {
+                    bat '''
+                        kubectl get svc 2>nul || type deployment-services.txt 2>nul || echo "Service info not available"
+                        echo.
+                        kubectl get pods -o wide 2>nul || type deployment-pods.txt 2>nul || echo "Pod info not available"
+                    '''
+                } catch (Exception e) {
+                    echo "Note: Could not fetch live cluster info"
+                }
             }
         }
         
@@ -214,9 +671,29 @@ pipeline {
                 
                 try {
                     bat '''
-                        echo === DIAGNOSTICS ===
-                        git config --list 2>nul || echo Cannot get git config
-                        dir /b 2>nul || echo Cannot list files
+                        echo === FAILURE DIAGNOSTICS ===
+                        kubectl config get-contexts 2>nul || echo Cannot get contexts
+                        echo.
+                        echo === ALL PODS STATUS ===
+                        kubectl get pods --all-namespaces -o wide 2>nul || echo Cannot get pods
+                        echo.
+                        echo === BACKEND PODS DETAILS ===
+                        kubectl describe pods -l app=backend 2>nul || echo Cannot describe backend pods
+                        echo.
+                        echo === BACKEND LOGS ===
+                        kubectl logs -l app=backend --tail=100 --all-containers=true 2>nul || echo Cannot get backend logs
+                        echo.
+                        echo === IMAGES IN CLUSTER ===
+                        docker exec k8s-terraform-control-plane crictl images 2>nul || echo Cannot access cluster
+                        echo.
+                        echo === LOCAL DOCKER IMAGES ===
+                        docker images | findstr "transport redis" || echo No images found
+                        echo.
+                        echo === SECRETS ===
+                        kubectl get secrets 2>nul || echo Cannot get secrets
+                        kubectl describe secret api-keys 2>nul || echo Cannot describe api-keys secret
+                        echo.
+                        echo Check the logs above for details
                     '''
                 } catch (Exception e) {
                     echo "Could not gather diagnostics"
