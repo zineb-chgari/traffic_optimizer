@@ -271,7 +271,7 @@ function LeafletMap({ route, allRoutes }) {
           <svg width="20" height="20" viewBox="0 0 24 24" fill="#FF8C00">
             <path d="M5 11l1.5-4.5h11L19 11m-1.5 5a1.5 1.5 0 0 1-1.5-1.5a1.5 1.5 0 0 1 1.5-1.5a1.5 1.5 0 0 1 1.5 1.5a1.5 1.5 0 0 1-1.5 1.5m-11 0A1.5 1.5 0 0 1 5 14.5A1.5 1.5 0 0 1 6.5 13A1.5 1.5 0 0 1 8 14.5A1.5 1.5 0 0 1 6.5 16M18.92 6c-.2-.58-.76-1-1.42-1h-11c-.66 0-1.22.42-1.42 1L3 12v8a1 1 0 0 0 1 1h1a1 1 0 0 0 1-1v-1h12v1a1 1 0 0 0 1 1h1a1 1 0 0 0 1-1v-8z"/>
           </svg>
-          <strong style="font-size: 14px;">Gare de Casa-Port</strong>
+          <strong style="font-size: 14px;"></strong>
         </div>
         <div style="font-size: 12px; color: #666;">${route.duration} min</div>
       </div>
@@ -314,7 +314,7 @@ function LeafletMap({ route, allRoutes }) {
           <svg width="20" height="20" viewBox="0 0 24 24" fill="#E91E63">
             <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/>
           </svg>
-          <strong style="font-size: 14px;">Morocco Mall</strong>
+          <strong style="font-size: 14px;"></strong>
         </div>
       </div>
     `);
