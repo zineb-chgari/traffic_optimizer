@@ -157,7 +157,6 @@ function LeafletMap({ route, allRoutes }) {
   const mapRef = useRef(null);
   const mapInstanceRef = useRef(null);
   const markersRef = useRef([]);
-  const popupRef = useRef(null);
 
   useEffect(() => {
     if (!mapRef.current) return;
@@ -215,10 +214,8 @@ function LeafletMap({ route, allRoutes }) {
     markersRef.current.forEach(layer => map.removeLayer(layer));
     markersRef.current = [];
 
-    // Dessiner l'itinéraire en ORANGE épais (style Google Maps)
     const allCoords = route.coordinates.map(c => [c[0], c[1]]);
     
-    // Ligne d'ombre
     const shadowLine = window.L.polyline(allCoords, {
       color: '#000000',
       weight: 10,
@@ -228,7 +225,6 @@ function LeafletMap({ route, allRoutes }) {
     }).addTo(map);
     markersRef.current.push(shadowLine);
 
-    // Ligne principale ORANGE
     const mainLine = window.L.polyline(allCoords, {
       color: '#FF8C00',
       weight: 8,
@@ -239,7 +235,6 @@ function LeafletMap({ route, allRoutes }) {
     }).addTo(map);
     markersRef.current.push(mainLine);
 
-    // Marqueur de DÉPART (orange) avec popup
     const startIcon = window.L.divIcon({
       className: 'custom-marker',
       html: `
@@ -260,7 +255,6 @@ function LeafletMap({ route, allRoutes }) {
       zIndexOffset: 1000 
     }).addTo(map);
 
-    // Popup pour le départ
     const startPopup = window.L.popup({
       closeButton: false,
       className: 'custom-popup',
@@ -271,7 +265,7 @@ function LeafletMap({ route, allRoutes }) {
           <svg width="20" height="20" viewBox="0 0 24 24" fill="#FF8C00">
             <path d="M5 11l1.5-4.5h11L19 11m-1.5 5a1.5 1.5 0 0 1-1.5-1.5a1.5 1.5 0 0 1 1.5-1.5a1.5 1.5 0 0 1 1.5 1.5a1.5 1.5 0 0 1-1.5 1.5m-11 0A1.5 1.5 0 0 1 5 14.5A1.5 1.5 0 0 1 6.5 13A1.5 1.5 0 0 1 8 14.5A1.5 1.5 0 0 1 6.5 16M18.92 6c-.2-.58-.76-1-1.42-1h-11c-.66 0-1.22.42-1.42 1L3 12v8a1 1 0 0 0 1 1h1a1 1 0 0 0 1-1v-1h12v1a1 1 0 0 0 1 1h1a1 1 0 0 0 1-1v-8z"/>
           </svg>
-          <strong style="font-size: 14px;"></strong>
+          <strong style="font-size: 14px;">Départ</strong>
         </div>
         <div style="font-size: 12px; color: #666;">${route.duration} min</div>
       </div>
@@ -280,7 +274,6 @@ function LeafletMap({ route, allRoutes }) {
     startMarker.bindPopup(startPopup).openPopup();
     markersRef.current.push(startMarker);
 
-    // Marqueur d'ARRIVÉE (rose) avec popup
     const endIcon = window.L.divIcon({
       className: 'custom-marker',
       html: `
@@ -314,7 +307,7 @@ function LeafletMap({ route, allRoutes }) {
           <svg width="20" height="20" viewBox="0 0 24 24" fill="#E91E63">
             <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/>
           </svg>
-          <strong style="font-size: 14px;"></strong>
+          <strong style="font-size: 14px;">Arrivée</strong>
         </div>
       </div>
     `);
@@ -416,7 +409,6 @@ function RouteCardModern({ route, selected, onClick }) {
         </div>
       </div>
 
-      {/* Alertes en haut de la carte */}
       {route.alerts.length > 0 && (
         <div className="border-t pt-3 space-y-1">
           {route.alerts.map((alert, i) => (
@@ -434,26 +426,46 @@ function RouteCardModern({ route, selected, onClick }) {
 function DetailsPanel({ route }) {
   if (!route) return null;
 
-  // Générer les étapes détaillées du transport
+  // ✅ LOGIQUE CORRIGÉE : Génération réaliste des étapes
   const generateDetailedSteps = () => {
     const steps = [];
-    let currentTime = 0;
-
-    // Marche initiale vers l'arrêt
-    if (route.walkingDistance > 0) {
+    let accumulatedTime = 0;
+    
+    // Constantes réalistes
+    const WALKING_SPEED = 80; // 80 mètres par minute (4.8 km/h)
+    const TRANSFER_TIME = 3; // 3 minutes de correspondance
+    
+    // Calculer les distances réelles
+    const totalWalkingDistance = route.walkingDistance;
+    const walkToFirstStop = Math.round(totalWalkingDistance * 0.4); // 40% au début
+    const walkToDestination = totalWalkingDistance - walkToFirstStop; // 60% à la fin
+    
+    // Calculer le temps de transport pur
+    const totalTransferTime = route.transfers * TRANSFER_TIME;
+    const initialWalkTime = Math.round(walkToFirstStop / WALKING_SPEED);
+    const finalWalkTime = Math.round(walkToDestination / WALKING_SPEED);
+    const transportTime = route.duration - totalTransferTime - initialWalkTime - finalWalkTime;
+    
+    // ÉTAPE 1: Marche initiale vers le premier arrêt
+    if (walkToFirstStop > 0) {
       steps.push({
         type: 'walk',
-        duration: Math.round(route.walkingDistance / 80), // ~80m/min
-        distance: Math.round(route.walkingDistance * 0.3),
+        duration: initialWalkTime,
+        distance: walkToFirstStop,
         description: "Marchez jusqu'à l'arrêt",
-        icon: 'walk'
+        icon: 'walk',
+        time: `0 min`
       });
-      currentTime += steps[0].duration;
+      accumulatedTime += initialWalkTime;
     }
 
-    // Segments de transport
+    // ÉTAPES DE TRANSPORT: Répartir le temps entre les segments
+    const segmentDuration = Math.round(transportTime / route.segments.length);
+    
     route.segments.forEach((segment, idx) => {
-      const segmentDuration = Math.round(route.duration / route.segments.length);
+      // Nombre d'arrêts réaliste basé sur la longueur du segment
+      const coordinateCount = segment.coordinates.length;
+      const estimatedStops = Math.max(2, Math.round(coordinateCount / 8)); // ~1 arrêt tous les 8 points
       
       steps.push({
         type: 'transport',
@@ -461,35 +473,38 @@ function DetailsPanel({ route }) {
         lineName: segment.lineName,
         lineColor: segment.lineColor,
         duration: segmentDuration,
-        stops: Math.round(segment.coordinates.length / 5),
+        stops: estimatedStops,
         description: `Prenez ${segment.lineName}`,
         icon: segment.lineName.includes('Tramway') ? 'tram' : 'bus',
-        departure: `Dans ${currentTime} min`,
-        arrival: `Dans ${currentTime + segmentDuration} min`
+        departureTime: `${accumulatedTime} min`,
+        arrivalTime: `${accumulatedTime + segmentDuration} min`
       });
-      currentTime += segmentDuration;
+      accumulatedTime += segmentDuration;
 
-      // Correspondance
+      // Ajouter une correspondance si ce n'est pas le dernier segment
       if (idx < route.segments.length - 1) {
         steps.push({
           type: 'transfer',
-          duration: 3,
+          duration: TRANSFER_TIME,
           description: `Correspondance - Changez vers ${route.segments[idx + 1].lineName}`,
-          icon: 'transfer'
+          icon: 'transfer',
+          time: `${accumulatedTime} min`
         });
-        currentTime += 3;
+        accumulatedTime += TRANSFER_TIME;
       }
     });
 
-    // Marche finale
-    if (route.walkingDistance > 0) {
+    // ÉTAPE FINALE: Marche vers la destination
+    if (walkToDestination > 0) {
       steps.push({
         type: 'walk',
-        duration: Math.round(route.walkingDistance / 80),
-        distance: Math.round(route.walkingDistance * 0.3),
+        duration: finalWalkTime,
+        distance: walkToDestination,
         description: "Marchez jusqu'à la destination",
-        icon: 'walk'
+        icon: 'walk',
+        time: `${accumulatedTime} min`
       });
+      accumulatedTime += finalWalkTime;
     }
 
     return steps;
@@ -524,8 +539,9 @@ function DetailsPanel({ route }) {
         </div>
         <div className="flex-1">
           <h2 className="text-xl font-bold text-gray-800">
-            Gare de Casa-Port → Morocco Mall
+            Itinéraire détaillé
           </h2>
+          <p className="text-sm text-gray-500">Durée totale: {route.duration} min</p>
         </div>
       </div>
 
@@ -556,7 +572,7 @@ function DetailsPanel({ route }) {
 
       {/* Détails étape par étape - Style Google Maps */}
       <div className="mb-6">
-        <h3 className="font-bold text-lg mb-4">Itinéraire détaillé</h3>
+        <h3 className="font-bold text-lg mb-4">Étapes du trajet</h3>
         
         <div className="space-y-4">
           {steps.map((step, idx) => (
@@ -606,7 +622,8 @@ function DetailsPanel({ route }) {
                 
                 {step.type === 'walk' && (
                   <div className="text-sm text-gray-600 mt-1">
-                    <div>Marche à pied • {step.duration} min ({step.distance}m)</div>
+                    <div>Marche à pied • {step.duration} min • {step.distance}m</div>
+                    {step.time && <div className="text-xs text-gray-500 mt-1">Heure: {step.time}</div>}
                   </div>
                 )}
                 
@@ -626,6 +643,11 @@ function DetailsPanel({ route }) {
                         <Clock className="w-4 h-4" />
                         <span>{step.duration} min de trajet</span>
                       </div>
+                      {step.departureTime && (
+                        <div className="text-xs text-gray-500 mt-1">
+                          Départ: {step.departureTime} → Arrivée: {step.arrivalTime}
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}
@@ -634,6 +656,7 @@ function DetailsPanel({ route }) {
                   <div className="text-sm text-orange-600 mt-1 flex items-center gap-1">
                     <AlertTriangle className="w-4 h-4" />
                     <span>Temps de correspondance: {step.duration} min</span>
+                    {step.time && <span className="text-xs text-gray-500 ml-2">• {step.time}</span>}
                   </div>
                 )}
               </div>
@@ -739,7 +762,7 @@ export default function TransportOptimizerApp() {
             </div>
             <div>
               <h1 className="text-3xl font-bold text-gray-800">Transport Optimizer</h1>
-              <p className="text-gray-500">Carte interactive OpenStreetMap avec routing réel</p>
+              <p className="text-gray-500">Itinéraires optimisés avec calcul réaliste</p>
             </div>
           </div>
 
