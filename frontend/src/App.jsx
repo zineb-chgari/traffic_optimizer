@@ -32,18 +32,17 @@ class TransportOptimizer {
     return Math.min(100, Math.round(density));
   }
 
-  static generateTransportRoutes(originLat, originLon, destLat, destLon, baseRoute, trafficData, transportLines) {
-    const routes = [];
+  static generateBestRoute(originLat, originLon, destLat, destLon, baseRoute, trafficData, transportLines) {
     const distance = baseRoute.distance;
     const baseDuration = baseRoute.duration;
     const realTraffic = trafficData.averageCongestion;
     const avgDensity = (this.calculateUrbanDensity(originLat, originLon) + this.calculateUrbanDensity(destLat, destLon)) / 2;
 
     const busLines = [transportLines.bus[0].id, transportLines.bus[1].id];
-    routes.push({
+    const route = {
       id: 1,
-      name: "Itinéraire 1",
-      subtitle: "Plus rapide",
+      name: "Itinéraire optimal",
+      subtitle: "Meilleur trajet disponible",
       type: "BUS_DIRECT",
       coordinates: baseRoute.coordinates,
       duration: Math.round(baseDuration / 60 * (1.3 + realTraffic / 200)),
@@ -58,53 +57,9 @@ class TransportOptimizer {
       score: this.calculateScore(baseDuration / 60 * 1.3, 0, distance * 0.05, avgDensity, realTraffic),
       alerts: realTraffic > 60 ? [{type: "alert", text: "1 alerte(s)"}, {type: "info", text: `+${Math.round(realTraffic / 10)} min de retard estimé`}] : [],
       segments: this.generateSegments(baseRoute.coordinates, busLines, transportLines)
-    });
+    };
 
-    const tramRoute = this.generateAlternativeRoute(baseRoute.coordinates, 0.08);
-    const tramLines = [transportLines.tramway[0].id, transportLines.bus[2].id];
-    routes.push({
-      id: 2,
-      name: "Itinéraire 2",
-      subtitle: "Moins de correspondances",
-      type: "TRAM_BUS",
-      coordinates: tramRoute,
-      duration: Math.round(baseDuration / 60 * (1.5 + realTraffic / 300)),
-      transfers: 1,
-      walkingDistance: Math.round(distance * 0.08),
-      totalDistance: Math.round(distance * 1.1),
-      busLines: tramLines,
-      lineDetails: [transportLines.tramway.find(l => l.id === tramLines[0]), transportLines.bus.find(l => l.id === tramLines[1])],
-      trafficLevel: "Modéré",
-      trafficSpeed: `${Math.round(34 + Math.random() * 15)}.${Math.round(Math.random() * 9)}`,
-      congestion: Math.round(realTraffic * 0.6),
-      score: this.calculateScore(baseDuration / 60 * 1.5, 1, distance * 0.08, avgDensity, realTraffic * 0.6),
-      alerts: [{type: "info", text: `+10 min de retard estimé`}],
-      segments: this.generateSegments(tramRoute, tramLines, transportLines)
-    });
-
-    const multiRoute = this.generateAlternativeRoute(baseRoute.coordinates, 0.12);
-    const multiLines = [transportLines.bus[3].id, transportLines.bus[4].id, transportLines.bus[5].id];
-    routes.push({
-      id: 3,
-      name: "Itinéraire 3",
-      subtitle: "Économique",
-      type: "MULTI_BUS",
-      coordinates: multiRoute,
-      duration: Math.round(baseDuration / 60 * 1.8),
-      transfers: 2,
-      walkingDistance: Math.round(distance * 0.12),
-      totalDistance: Math.round(distance * 1.2),
-      busLines: multiLines,
-      lineDetails: multiLines.map(id => transportLines.bus.find(l => l.id === id)),
-      trafficLevel: "Modéré",
-      trafficSpeed: `${Math.round(28 + Math.random() * 15)}.${Math.round(Math.random() * 9)}`,
-      congestion: realTraffic,
-      score: this.calculateScore(baseDuration / 60 * 1.8, 2, distance * 0.12, avgDensity * 0.6, realTraffic),
-      alerts: [],
-      segments: this.generateSegments(multiRoute, multiLines, transportLines)
-    });
-
-    return routes.sort((a, b) => b.score - a.score);
+    return route;
   }
 
   static generateSegments(coordinates, lineIds, transportLines) {
@@ -135,25 +90,9 @@ class TransportOptimizer {
     score -= (traffic / 100) * 10;
     return Math.max(0, Math.min(100, Math.round(score * 10) / 10));
   }
-
-  static generateAlternativeRoute(baseCoords, deviation) {
-    const newCoords = [];
-    for (let i = 0; i < baseCoords.length; i++) {
-      const coord = baseCoords[i];
-      if (i === 0 || i === baseCoords.length - 1) {
-        newCoords.push(coord);
-      } else {
-        const ratio = i / (baseCoords.length - 1);
-        const devFactor = Math.sin(ratio * Math.PI) * deviation;
-        const direction = i % 2 === 0 ? 1 : -1;
-        newCoords.push([coord[0] + direction * devFactor * 0.8, coord[1] + direction * devFactor]);
-      }
-    }
-    return newCoords;
-  }
 }
 
-function LeafletMap({ route, allRoutes }) {
+function LeafletMap({ route }) {
   const mapRef = useRef(null);
   const mapInstanceRef = useRef(null);
   const markersRef = useRef([]);
@@ -322,7 +261,7 @@ function LeafletMap({ route, allRoutes }) {
   if (!route) {
     return (
       <div className="h-full bg-gradient-to-br from-blue-100 via-blue-50 to-indigo-100 rounded-lg flex items-center justify-center">
-        <p className="text-gray-400 font-medium">Sélectionnez un itinéraire pour voir la carte</p>
+        <p className="text-gray-400 font-medium">Recherchez un itinéraire pour voir la carte</p>
       </div>
     );
   }
@@ -348,7 +287,7 @@ function LeafletMap({ route, allRoutes }) {
   );
 }
 
-function RouteCardModern({ route, selected, onClick }) {
+function RouteSummaryCard({ route }) {
   const getTrafficColor = () => {
     if (route.congestion < 40) return "bg-green-500";
     if (route.congestion < 70) return "bg-yellow-500";
@@ -362,61 +301,73 @@ function RouteCardModern({ route, selected, onClick }) {
   };
 
   return (
-    <div
-      onClick={onClick}
-      className={`bg-white rounded-2xl p-5 cursor-pointer transition-all border-4 ${
-        selected ? "border-blue-500 shadow-xl" : "border-transparent shadow-md hover:shadow-lg"
-      }`}
-    >
-      <div className="flex justify-between items-start mb-4">
+    <div className="bg-white rounded-2xl p-6 shadow-lg">
+      <div className="flex justify-between items-start mb-6">
         <div>
-          <h3 className="text-lg font-bold text-gray-800">{route.name}</h3>
-          <p className="text-sm text-gray-500">{route.subtitle}</p>
+          <h3 className="text-2xl font-bold text-gray-800">{route.name}</h3>
+          <p className="text-sm text-gray-500 mt-1">{route.subtitle}</p>
         </div>
         <div className="text-right">
-          <div className="text-4xl font-bold text-blue-600">{route.score}</div>
+          <div className="text-5xl font-bold text-blue-600">{route.score}</div>
           <div className="text-xs text-gray-500">score</div>
         </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-3 mb-4 text-center">
-        <div>
-          <Clock className="w-5 h-5 mx-auto text-gray-400 mb-1" />
-          <div className="text-xl font-bold">{route.duration}min</div>
-          <div className="text-xs text-gray-500">Durée</div>
+      <div className="grid grid-cols-3 gap-4 mb-6">
+        <div className="text-center p-4 bg-blue-50 rounded-xl">
+          <Clock className="w-6 h-6 mx-auto text-blue-600 mb-2" />
+          <div className="text-2xl font-bold text-gray-800">{route.duration}min</div>
+          <div className="text-xs text-gray-500 mt-1">Durée totale</div>
         </div>
-        <div>
-          <Bus className="w-5 h-5 mx-auto text-gray-400 mb-1" />
-          <div className="text-xl font-bold">{route.transfers}</div>
-          <div className="text-xs text-gray-500">Corresp.</div>
+        <div className="text-center p-4 bg-purple-50 rounded-xl">
+          <Bus className="w-6 h-6 mx-auto text-purple-600 mb-2" />
+          <div className="text-2xl font-bold text-gray-800">{route.transfers}</div>
+          <div className="text-xs text-gray-500 mt-1">Correspondance(s)</div>
         </div>
-        <div>
-          <Navigation className="w-5 h-5 mx-auto text-gray-400 mb-1" />
-          <div className="text-xl font-bold">{route.walkingDistance}m</div>
-          <div className="text-xs text-gray-500">Marche</div>
+        <div className="text-center p-4 bg-green-50 rounded-xl">
+          <Navigation className="w-6 h-6 mx-auto text-green-600 mb-2" />
+          <div className="text-2xl font-bold text-gray-800">{route.walkingDistance}m</div>
+          <div className="text-xs text-gray-500 mt-1">Marche à pied</div>
         </div>
       </div>
 
-      <div className="border-t pt-3 mb-3">
-        <div className="text-xs text-gray-600 mb-2">
-          Ligne: <span className="font-semibold">{route.busLines.join(", ")}</span>
+      <div className="border-t pt-4 mb-4">
+        <div className="text-sm text-gray-600 mb-3">
+          Lignes utilisées:
         </div>
-        <div className="flex items-center gap-2 text-xs mb-2">
-          <span className="text-gray-600">Trafic:</span>
-          <div className={`w-2 h-2 rounded-full ${getTrafficColor()}`}></div>
+        <div className="flex gap-2 flex-wrap mb-4">
+          {route.lineDetails.map((line, i) => (
+            <div 
+              key={i} 
+              className="px-4 py-2 rounded-full text-white text-sm font-semibold shadow-md"
+              style={{ backgroundColor: line.color }}
+            >
+              {line.id} - {line.name}
+            </div>
+          ))}
+        </div>
+        <div className="flex items-center gap-3 text-sm">
+          <span className="text-gray-600">État du trafic:</span>
+          <div className={`w-3 h-3 rounded-full ${getTrafficColor()}`}></div>
           <span className="font-semibold">{getTrafficText()}</span>
           <span className="text-gray-400">({route.trafficSpeed} km/h)</span>
         </div>
       </div>
 
       {route.alerts.length > 0 && (
-        <div className="border-t pt-3 space-y-1">
-          {route.alerts.map((alert, i) => (
-            <div key={i} className={`flex items-center gap-2 text-xs ${alert.type === 'alert' ? 'text-red-600' : 'text-orange-600'}`}>
-              <AlertTriangle className="w-3 h-3" />
-              <span>{alert.text}</span>
-            </div>
-          ))}
+        <div className="border-t pt-4 bg-red-50 p-4 rounded-xl">
+          <div className="font-bold text-sm text-red-800 mb-2 flex items-center gap-2">
+            <AlertTriangle className="w-5 h-5" />
+            Alertes en temps réel
+          </div>
+          <div className="space-y-2">
+            {route.alerts.map((alert, i) => (
+              <div key={i} className={`flex items-center gap-2 text-sm ${alert.type === 'alert' ? 'text-red-600' : 'text-orange-600'}`}>
+                <span className="font-bold">•</span>
+                <span>{alert.text}</span>
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </div>
@@ -426,27 +377,22 @@ function RouteCardModern({ route, selected, onClick }) {
 function DetailsPanel({ route }) {
   if (!route) return null;
 
-  // ✅ LOGIQUE CORRIGÉE : Génération réaliste des étapes
   const generateDetailedSteps = () => {
     const steps = [];
     let accumulatedTime = 0;
     
-    // Constantes réalistes
-    const WALKING_SPEED = 80; // 80 mètres par minute (4.8 km/h)
-    const TRANSFER_TIME = 3; // 3 minutes de correspondance
+    const WALKING_SPEED = 80;
+    const TRANSFER_TIME = 3;
     
-    // Calculer les distances réelles
     const totalWalkingDistance = route.walkingDistance;
-    const walkToFirstStop = Math.round(totalWalkingDistance * 0.4); // 40% au début
-    const walkToDestination = totalWalkingDistance - walkToFirstStop; // 60% à la fin
+    const walkToFirstStop = Math.round(totalWalkingDistance * 0.4);
+    const walkToDestination = totalWalkingDistance - walkToFirstStop;
     
-    // Calculer le temps de transport pur
     const totalTransferTime = route.transfers * TRANSFER_TIME;
     const initialWalkTime = Math.round(walkToFirstStop / WALKING_SPEED);
     const finalWalkTime = Math.round(walkToDestination / WALKING_SPEED);
     const transportTime = route.duration - totalTransferTime - initialWalkTime - finalWalkTime;
     
-    // ÉTAPE 1: Marche initiale vers le premier arrêt
     if (walkToFirstStop > 0) {
       steps.push({
         type: 'walk',
@@ -459,13 +405,11 @@ function DetailsPanel({ route }) {
       accumulatedTime += initialWalkTime;
     }
 
-    // ÉTAPES DE TRANSPORT: Répartir le temps entre les segments
     const segmentDuration = Math.round(transportTime / route.segments.length);
     
     route.segments.forEach((segment, idx) => {
-      // Nombre d'arrêts réaliste basé sur la longueur du segment
       const coordinateCount = segment.coordinates.length;
-      const estimatedStops = Math.max(2, Math.round(coordinateCount / 8)); // ~1 arrêt tous les 8 points
+      const estimatedStops = Math.max(2, Math.round(coordinateCount / 8));
       
       steps.push({
         type: 'transport',
@@ -481,7 +425,6 @@ function DetailsPanel({ route }) {
       });
       accumulatedTime += segmentDuration;
 
-      // Ajouter une correspondance si ce n'est pas le dernier segment
       if (idx < route.segments.length - 1) {
         steps.push({
           type: 'transfer',
@@ -494,7 +437,6 @@ function DetailsPanel({ route }) {
       }
     });
 
-    // ÉTAPE FINALE: Marche vers la destination
     if (walkToDestination > 0) {
       steps.push({
         type: 'walk',
@@ -514,183 +456,107 @@ function DetailsPanel({ route }) {
 
   return (
     <div className="bg-white rounded-2xl p-6 shadow-lg">
-      {/* Alertes en haut */}
-      {route.alerts && route.alerts.length > 0 && (
-        <div className="mb-6 p-4 bg-red-50 border-l-4 border-red-500 rounded">
-          <div className="font-bold text-sm text-red-800 mb-2 flex items-center gap-2">
-            <AlertTriangle className="w-5 h-5" />
-            {route.alerts.length} alerte(s)
-          </div>
-          <div className="space-y-1">
-            {route.alerts.map((alert, i) => (
-              <div key={i} className={`text-sm flex items-start gap-2 ${alert.type === 'alert' ? 'text-red-600' : 'text-orange-600'}`}>
-                <span className="mt-0.5">•</span>
-                <span>{alert.text}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* En-tête principal */}
       <div className="flex items-center gap-3 mb-6 pb-4 border-b">
-        <div className="bg-yellow-500 p-3 rounded-lg">
-          <Bus className="w-6 h-6 text-white" />
+        <div className="bg-blue-600 p-3 rounded-lg">
+          <Activity className="w-6 h-6 text-white" />
         </div>
         <div className="flex-1">
           <h2 className="text-xl font-bold text-gray-800">
-            Itinéraire détaillé
+            Itinéraire détaillé étape par étape
           </h2>
-          <p className="text-sm text-gray-500">Durée totale: {route.duration} min</p>
+          <p className="text-sm text-gray-500">Suivez ces instructions pour votre trajet</p>
         </div>
       </div>
 
-      {/* Métriques principales */}
-      <div className="grid grid-cols-3 gap-4 mb-6">
-        <div className="flex items-center gap-2">
-          <Clock className="w-5 h-5 text-gray-500" />
-          <div>
-            <div className="text-lg font-bold">{route.duration} min</div>
-            <div className="text-xs text-gray-500">Durée</div>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <Activity className="w-5 h-5 text-gray-500" />
-          <div>
-            <div className="text-lg font-bold">{route.congestion}%</div>
-            <div className="text-xs text-gray-500">Trafic</div>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <Navigation className="w-5 h-5 text-gray-500" />
-          <div>
-            <div className="text-lg font-bold">{(route.totalDistance / 1000).toFixed(1)} km</div>
-            <div className="text-xs text-gray-500">Distance</div>
-          </div>
-        </div>
-      </div>
+      <div className="space-y-4">
+        {steps.map((step, idx) => (
+          <div key={idx} className="flex gap-4">
+            <div className="flex flex-col items-center">
+              {step.type === 'walk' && (
+                <div className="w-12 h-12 rounded-full bg-gray-200 flex items-center justify-center flex-shrink-0">
+                  <Navigation className="w-6 h-6 text-gray-600" />
+                </div>
+              )}
+              {step.type === 'transport' && (
+                <div 
+                  className="w-12 h-12 rounded-full flex items-center justify-center text-white font-bold flex-shrink-0"
+                  style={{ backgroundColor: step.lineColor }}
+                >
+                  {step.icon === 'tram' ? (
+                    <Activity className="w-6 h-6" />
+                  ) : (
+                    <Bus className="w-6 h-6" />
+                  )}
+                </div>
+              )}
+              {step.type === 'transfer' && (
+                <div className="w-12 h-12 rounded-full bg-orange-200 flex items-center justify-center flex-shrink-0">
+                  <Activity className="w-6 h-6 text-orange-600" />
+                </div>
+              )}
+              
+              {idx < steps.length - 1 && (
+                <div 
+                  className={`w-1 flex-1 my-2 ${
+                    step.type === 'walk' ? 'border-l-2 border-dashed border-gray-300' : 'bg-gray-300'
+                  }`}
+                  style={{ 
+                    minHeight: '50px',
+                    backgroundColor: step.type === 'transport' ? step.lineColor : undefined 
+                  }}
+                ></div>
+              )}
+            </div>
 
-      {/* Détails étape par étape - Style Google Maps */}
-      <div className="mb-6">
-        <h3 className="font-bold text-lg mb-4">Étapes du trajet</h3>
-        
-        <div className="space-y-4">
-          {steps.map((step, idx) => (
-            <div key={idx} className="flex gap-3">
-              {/* Icône et ligne */}
-              <div className="flex flex-col items-center">
-                {step.type === 'walk' && (
-                  <div className="w-10 h-10 rounded-full bg-gray-200 flex items-center justify-center">
-                    <Navigation className="w-5 h-5 text-gray-600" />
+            <div className="flex-1 pb-6">
+              <div className="font-semibold text-gray-800 text-lg mb-2">{step.description}</div>
+              
+              {step.type === 'walk' && (
+                <div className="bg-gray-50 p-3 rounded-lg">
+                  <div className="text-sm text-gray-700 font-medium">
+                    Marche à pied • {step.duration} min • {step.distance}m
                   </div>
-                )}
-                {step.type === 'transport' && (
-                  <div 
-                    className="w-10 h-10 rounded-full flex items-center justify-center text-white font-bold"
-                    style={{ backgroundColor: step.lineColor }}
-                  >
-                    {step.icon === 'tram' ? (
-                      <Activity className="w-5 h-5" />
-                    ) : (
-                      <Bus className="w-5 h-5" />
+                  {step.time && <div className="text-xs text-gray-500 mt-1">Heure de départ: {step.time}</div>}
+                </div>
+              )}
+              
+              {step.type === 'transport' && (
+                <div className="bg-blue-50 p-4 rounded-lg">
+                  <div className="flex items-center gap-3 mb-3">
+                    <div 
+                      className="px-3 py-1 rounded-lg text-sm font-bold text-white"
+                      style={{ backgroundColor: step.lineColor }}
+                    >
+                      {step.line}
+                    </div>
+                    <span className="text-sm font-medium text-gray-700">{step.stops} arrêts</span>
+                  </div>
+                  <div className="space-y-2 text-sm text-gray-700">
+                    <div className="flex items-center gap-2">
+                      <Clock className="w-4 h-4" />
+                      <span className="font-medium">{step.duration} min de trajet</span>
+                    </div>
+                    {step.departureTime && (
+                      <div className="text-xs text-gray-600">
+                        Départ: {step.departureTime} → Arrivée: {step.arrivalTime}
+                      </div>
                     )}
                   </div>
-                )}
-                {step.type === 'transfer' && (
-                  <div className="w-10 h-10 rounded-full bg-orange-200 flex items-center justify-center">
-                    <Activity className="w-5 h-5 text-orange-600" />
-                  </div>
-                )}
-                
-                {/* Ligne de connexion */}
-                {idx < steps.length - 1 && (
-                  <div 
-                    className={`w-1 flex-1 my-1 ${
-                      step.type === 'walk' ? 'border-l-2 border-dashed border-gray-300' : 'bg-gray-300'
-                    }`}
-                    style={{ 
-                      minHeight: '40px',
-                      backgroundColor: step.type === 'transport' ? step.lineColor : undefined 
-                    }}
-                  ></div>
-                )}
-              </div>
-
-              {/* Contenu */}
-              <div className="flex-1 pb-4">
-                <div className="font-semibold text-gray-800">{step.description}</div>
-                
-                {step.type === 'walk' && (
-                  <div className="text-sm text-gray-600 mt-1">
-                    <div>Marche à pied • {step.duration} min • {step.distance}m</div>
-                    {step.time && <div className="text-xs text-gray-500 mt-1">Heure: {step.time}</div>}
-                  </div>
-                )}
-                
-                {step.type === 'transport' && (
-                  <div className="mt-2">
-                    <div className="flex items-center gap-2 mb-2">
-                      <div 
-                        className="px-2 py-1 rounded text-xs font-bold text-white"
-                        style={{ backgroundColor: step.lineColor }}
-                      >
-                        {step.line}
-                      </div>
-                      <span className="text-sm text-gray-600">{step.stops} arrêts</span>
-                    </div>
-                    <div className="text-sm text-gray-600">
-                      <div className="flex items-center gap-2">
-                        <Clock className="w-4 h-4" />
-                        <span>{step.duration} min de trajet</span>
-                      </div>
-                      {step.departureTime && (
-                        <div className="text-xs text-gray-500 mt-1">
-                          Départ: {step.departureTime} → Arrivée: {step.arrivalTime}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-                
-                {step.type === 'transfer' && (
-                  <div className="text-sm text-orange-600 mt-1 flex items-center gap-1">
+                </div>
+              )}
+              
+              {step.type === 'transfer' && (
+                <div className="bg-orange-50 p-3 rounded-lg">
+                  <div className="text-sm text-orange-700 flex items-center gap-2 font-medium">
                     <AlertTriangle className="w-4 h-4" />
                     <span>Temps de correspondance: {step.duration} min</span>
-                    {step.time && <span className="text-xs text-gray-500 ml-2">• {step.time}</span>}
                   </div>
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Informations supplémentaires */}
-      <div className="pt-6 border-t">
-        <div className="grid grid-cols-2 gap-4 text-sm">
-          <div>
-            <div className="text-gray-600">Lignes utilisées:</div>
-            <div className="flex gap-2 mt-2 flex-wrap">
-              {route.lineDetails.map((line, i) => (
-                <div 
-                  key={i} 
-                  className="px-3 py-1 rounded-full text-white text-xs font-semibold"
-                  style={{ backgroundColor: line.color }}
-                >
-                  {line.id}
+                  {step.time && <div className="text-xs text-gray-600 mt-1">Heure: {step.time}</div>}
                 </div>
-              ))}
+              )}
             </div>
           </div>
-          <div>
-            <div className="text-gray-600 mb-2">Résumé:</div>
-            <div className="text-sm space-y-1">
-              <div>• Correspondances: <span className="font-semibold">{route.transfers}</span></div>
-              <div>• Marche totale: <span className="font-semibold">{route.walkingDistance}m</span></div>
-              <div>• Score: <span className="font-semibold text-blue-600">{route.score}/100</span></div>
-            </div>
-          </div>
-        </div>
+        ))}
       </div>
     </div>
   );
@@ -699,8 +565,7 @@ function DetailsPanel({ route }) {
 export default function TransportOptimizerApp() {
   const [origin, setOrigin] = useState("");
   const [destination, setDestination] = useState("");
-  const [routes, setRoutes] = useState([]);
-  const [selectedRoute, setSelectedRoute] = useState(null);
+  const [route, setRoute] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -712,8 +577,7 @@ export default function TransportOptimizerApp() {
 
     setLoading(true);
     setError("");
-    setRoutes([]);
-    setSelectedRoute(null);
+    setRoute(null);
 
     try {
       const geoOrigin = await fetch(`${API_URL}/api/geocode?address=${encodeURIComponent(origin)}`).then(r => {
@@ -738,13 +602,12 @@ export default function TransportOptimizerApp() {
       if (!optimizeResponse.ok) throw new Error('Erreur lors de l\'optimisation');
 
       const data = await optimizeResponse.json();
-      const optimizedRoutes = TransportOptimizer.generateTransportRoutes(
+      const bestRoute = TransportOptimizer.generateBestRoute(
         geoOrigin.lat, geoOrigin.lon, geoDest.lat, geoDest.lon,
         data.route, data.route.traffic, data.transportLines
       );
 
-      setRoutes(optimizedRoutes);
-      setSelectedRoute(optimizedRoutes[0]);
+      setRoute(bestRoute);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -762,7 +625,7 @@ export default function TransportOptimizerApp() {
             </div>
             <div>
               <h1 className="text-3xl font-bold text-gray-800">Transport Optimizer</h1>
-              <p className="text-gray-500">Itinéraires optimisés avec calcul réaliste</p>
+              <p className="text-gray-500">Meilleur itinéraire optimisé pour votre trajet</p>
             </div>
           </div>
 
@@ -792,17 +655,17 @@ export default function TransportOptimizerApp() {
           <button
             onClick={handleSearch}
             disabled={loading}
-            className="w-full bg-blue-600 text-white p-4 rounded-xl font-semibold hover:bg-blue-700 disabled:bg-gray-400 flex items-center justify-center gap-2"
+            className="w-full bg-blue-600 text-white p-4 rounded-xl font-semibold hover:bg-blue-700 disabled:bg-gray-400 flex items-center justify-center gap-2 transition-colors"
           >
             {loading ? (
               <>
                 <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                Calcul de l'itinéraire...
+                Recherche du meilleur itinéraire...
               </>
             ) : (
               <>
                 <Search className="w-5 h-5" />
-                Optimiser l'itinéraire
+                Trouver le meilleur itinéraire
               </>
             )}
           </button>
@@ -811,31 +674,21 @@ export default function TransportOptimizerApp() {
             <div className="mt-4 bg-red-50 border-l-4 border-red-500 p-4 rounded">
               <div className="flex items-center gap-2">
                 <AlertTriangle className="w-5 h-5 text-red-500" />
-                <span className="text-red-700">{error}</span>
+                <span className="text-red-700 font-medium">{error}</span>
               </div>
             </div>
           )}
         </header>
 
-        {routes.length > 0 && (
-          <div className="grid lg:grid-cols-3 gap-6">
-            <div className="space-y-4">
-              {routes.map(route => (
-                <RouteCardModern
-                  key={route.id}
-                  route={route}
-                  selected={selectedRoute?.id === route.id}
-                  onClick={() => setSelectedRoute(route)}
-                />
-              ))}
+        {route && (
+          <div className="space-y-6">
+            <RouteSummaryCard route={route} />
+            
+            <div className="bg-white rounded-2xl p-4 shadow-lg" style={{height: '500px'}}>
+              <LeafletMap route={route} />
             </div>
-
-            <div className="lg:col-span-2 space-y-6">
-              <div className="bg-white rounded-2xl p-4 shadow-lg" style={{height: '500px'}}>
-                <LeafletMap route={selectedRoute} allRoutes={routes} />
-              </div>
-              {selectedRoute && <DetailsPanel route={selectedRoute} />}
-            </div>
+            
+            <DetailsPanel route={route} />
           </div>
         )}
       </div>
