@@ -313,16 +313,11 @@ function RouteSummaryCard({ route }) {
         </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-4 mb-6">
+      <div className="grid grid-cols-2 gap-4 mb-6">
         <div className="text-center p-4 bg-blue-50 rounded-xl">
           <Clock className="w-6 h-6 mx-auto text-blue-600 mb-2" />
           <div className="text-2xl font-bold text-gray-800">{route.duration}min</div>
           <div className="text-xs text-gray-500 mt-1">Durée totale</div>
-        </div>
-        <div className="text-center p-4 bg-purple-50 rounded-xl">
-          <Bus className="w-6 h-6 mx-auto text-purple-600 mb-2" />
-          <div className="text-2xl font-bold text-gray-800">{route.transfers}</div>
-          <div className="text-xs text-gray-500 mt-1">Correspondance(s)</div>
         </div>
         <div className="text-center p-4 bg-green-50 rounded-xl">
           <Navigation className="w-6 h-6 mx-auto text-green-600 mb-2" />
